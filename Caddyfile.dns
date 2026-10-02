@@ -1,0 +1,26 @@
+{$DASHBOARD_DOMAIN} {
+    # Certificate via DuckDNS DNS-01: works on any public port, no 80/443 needed.
+    tls {
+        dns duckdns {env.DUCKDNS_TOKEN}
+    }
+
+    encode zstd gzip
+    request_body {
+        max_size 1MB
+    }
+
+    reverse_proxy app:8765
+
+    header {
+        Strict-Transport-Security "max-age=31536000"
+        X-Content-Type-Options "nosniff"
+        X-Frame-Options "DENY"
+        Referrer-Policy "no-referrer"
+        # The microphone is needed for voice input in the chat.
+        Permissions-Policy "camera=(), microphone=(self), geolocation=(), payment=(), usb=()"
+        # Same-origin only; album covers come from Spotify's CDN.
+        Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: https://*.scdn.co; connect-src 'self'; frame-ancestors 'none'; object-src 'none'; base-uri 'self'; form-action 'self'"
+        Cross-Origin-Opener-Policy "same-origin"
+        -Server
+    }
+}

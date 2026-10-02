@@ -37,6 +37,8 @@ Dann `http://127.0.0.1:8765` öffnen, Passwort **demo**.
 3. `.env` aus `.env.example` anlegen, Passwort-Hash mit `python -m app.hashpw` erzeugen.
 4. Starten: `python -m uvicorn app.main:app --host 127.0.0.1 --port 8765`.
 
+Auf einem Server (HTTPS, DuckDNS, Port 57443) siehe **DEPLOY.md**.
+
 ## Sicherheit
 
 - Login mit Passwort (Argon2), Sperre nach 5 Fehlversuchen für 15 Minuten, Cookie `HttpOnly` + `SameSite=Strict`.

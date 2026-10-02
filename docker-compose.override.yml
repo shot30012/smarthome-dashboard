@@ -1,0 +1,20 @@
+# Docker Compose merges this file automatically. It publishes the dashboard on port 57443
+# (the router already sends 80/443 to Dayline) and gets the certificate via DuckDNS DNS-01.
+# To use plain 80/443 instead, delete this file and use the Caddyfile as it is.
+# Needs Docker Compose 2.24 or newer for the "!override" tags.
+services:
+  caddy:
+    image: dashboard-caddy-duckdns:2.10
+    build:
+      context: .
+      dockerfile: Dockerfile.caddy
+    environment:
+      DASHBOARD_DOMAIN: ${DASHBOARD_DOMAIN}
+      DUCKDNS_TOKEN: ${DUCKDNS_TOKEN}
+    ports: !override
+      - "57443:443"
+      - "57443:443/udp"
+    volumes: !override
+      - ./Caddyfile.dns:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
