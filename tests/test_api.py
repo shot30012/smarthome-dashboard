@@ -118,3 +118,8 @@ def test_play_uri_rejects_bad_uris(logged_in, uri):
 
 def test_seek_rejects_negative(logged_in):
     assert logged_in.post("/api/spotify/seek", json={"position_ms": -5}).status_code == 422
+
+@pytest.mark.parametrize("path, expected", [("/static/app.js", "text/javascript"), ("/static/style.css", "text/css")])
+def test_static_files_have_correct_mime_type(client, path, expected):
+    # Regression: on Windows .js was served as text/plain and blocked by "nosniff", leaving a blank page.
+    assert client.get(path).headers["content-type"].startswith(expected)

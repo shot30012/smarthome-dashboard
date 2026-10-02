@@ -231,7 +231,9 @@ function renderDJ(state) {
       el("button", { class: "cue", "aria-label": `Auf ${d.name} abspielen`, onclick: () => act("/api/spotify/transfer", { device_id: d.id }) }, d.active ? "LIVE" : "Abspielen"),
     ));
   }
-  for (const p of state.entities.filter((e) => e.domain === "media_player")) {
+  // An Echo that is also a Spotify device is one speaker: show it once (as the Spotify channel).
+  const spotifyNames = new Set((sp.devices || []).map((d) => d.name.trim().toLowerCase()));
+  for (const p of state.entities.filter((e) => e.domain === "media_player" && !spotifyNames.has(e.name.trim().toLowerCase()))) {
     const playing = p.state === "playing";
     channels.push(el("div", { class: `channel echo${playing ? " live" : ""}` },
       el("span", { class: "led", "aria-hidden": "true" }),

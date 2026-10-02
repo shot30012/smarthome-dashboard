@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import mimetypes
 import secrets
 import threading
 import time
@@ -18,6 +19,11 @@ from . import bot
 from .config import get_settings
 from .ha import DOMAINS, FakeHomeAssistant, HomeAssistant, HomeAssistantError
 from .spotify import FakeSpotify, NotConnected, Spotify, SpotifyError
+
+# Windows can map .js to text/plain via the registry; with "nosniff" the browser then refuses to run
+# the script and the page stays blank. Pin the types we serve.
+mimetypes.add_type("text/javascript", ".js")
+mimetypes.add_type("text/css", ".css")
 
 settings = get_settings()
 hasher = PasswordHash.recommended()
