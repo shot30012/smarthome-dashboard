@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import mimetypes
+import re
 import secrets
 import threading
 import time
@@ -111,6 +112,8 @@ class LevelBody(BaseModel):
 
 class SpotifyBody(BaseModel):
     level: int | None = Field(default=None, ge=0, le=100)
+    seconds: int | None = Field(default=None, ge=1, le=8)
+    context_uri: str | None = Field(default=None, pattern=r"^spotify:(album|playlist):[A-Za-z0-9]{1,40}$")
     position_ms: int | None = Field(default=None, ge=0, le=36_000_000)
     uri: str | None = Field(default=None, pattern=r"^spotify:(track|album|artist|playlist):[A-Za-z0-9]{1,40}$")
     device_id: str | None = Field(default=None, min_length=1, max_length=200)
@@ -171,7 +174,7 @@ def state():
         payload["ha_error"] = str(exc)
     if spotify.configured and spotify.connected:
         try:
-            payload["spotify"] = {"configured": True, "connected": True, "now": spotify.now_playing(), "devices": spotify.devices()}
+            payload["spotify"] = {"configured": True, "connected": True, "now": spotify.now_playing(), "devices": spotify.devices(), "queue": spotify.queue()[:5]}
         except SpotifyError as exc:
             payload["spotify"] = {"configured": True, "connected": True, "now": None, "devices": [], "error": str(exc)}
     return payload
@@ -227,6 +230,40 @@ def media_action(entity_id: str, action: str, body: LevelBody | None = None):
     return {"ok": True}
 
 
+# Fixed paths must be declared before the catch-all /api/spotify/{action} route.
+_crossfade_lock = threading.Lock()
+
+
+@app.post("/api/spotify/crossfade", dependencies=[Depends(require_login)])
+def spotify_crossfade(body: SpotifyBody | None = None):
+    """DJ transition: fade the volume down, skip to the next track, fade back up."""
+    body = body or SpotifyBody()
+    seconds = body.seconds or 3
+    if not _crossfade_lock.acquire(blocking=False):
+        raise HTTPException(409, "Es läuft schon eine Überblendung.")
+
+    def do():
+        now = spotify.now_playing()
+        start = (now or {}).get("volume")
+        start = 50 if start is None else start
+        steps = 6
+        pause = seconds / 2 / steps
+        for i in range(steps, -1, -1):
+            spotify.volume(round(start * i / steps), body.device_id)
+            time.sleep(pause)
+        spotify.next()
+        time.sleep(min(0.5, pause))
+        for i in range(steps + 1):
+            spotify.volume(round(start * i / steps), body.device_id)
+            time.sleep(pause)
+
+    try:
+        run(do)
+    finally:
+        _crossfade_lock.release()
+    return {"ok": True}
+
+
 @app.post("/api/spotify/{action}", dependencies=[Depends(require_login)])
 def spotify_action(action: str, body: SpotifyBody | None = None):
     body = body or SpotifyBody()
@@ -245,7 +282,10 @@ def spotify_action(action: str, body: SpotifyBody | None = None):
             spotify.seek(body.position_ms)
         elif action == "play_uri" and body.uri is not None:
             kind = body.uri.split(":")[1]
-            spotify.play(body.uri, kind, body.device_id)
+            if body.context_uri and kind == "track":
+                spotify.play_in_context(body.context_uri, body.uri, body.device_id)
+            else:
+                spotify.play(body.uri, kind, body.device_id)
         elif action == "transfer" and body.device_id is not None:
             spotify.transfer(body.device_id)
         else:
@@ -253,6 +293,15 @@ def spotify_action(action: str, body: SpotifyBody | None = None):
 
     run(do)
     return {"ok": True}
+
+
+@app.get("/api/spotify/playlists/{playlist_id}/tracks", dependencies=[Depends(require_login)])
+def spotify_playlist_tracks(playlist_id: str):
+    if not re.fullmatch(r"[A-Za-z0-9]{1,40}", playlist_id):
+        raise HTTPException(404, "Playlist nicht gefunden.")
+    if not (spotify.configured and spotify.connected):
+        return {"tracks": []}
+    return {"tracks": run(lambda: spotify.playlist_tracks(playlist_id))}
 
 
 @app.get("/api/spotify/playlists", dependencies=[Depends(require_login)])

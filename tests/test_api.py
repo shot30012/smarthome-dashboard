@@ -123,3 +123,47 @@ def test_seek_rejects_negative(logged_in):
 def test_static_files_have_correct_mime_type(client, path, expected):
     # Regression: on Windows .js was served as text/plain and blocked by "nosniff", leaving a blank page.
     assert client.get(path).headers["content-type"].startswith(expected)
+
+def test_state_has_queue(logged_in):
+    queue = logged_in.get("/api/state").json()["spotify"]["queue"]
+    assert queue and {"title", "artist", "uri"} <= queue[0].keys()
+
+
+def test_playlist_tracks_and_play_in_context(logged_in):
+    tracks = logged_in.get("/api/spotify/playlists/chill/tracks").json()["tracks"]
+    assert len(tracks) >= 3 and tracks[0]["uri"].startswith("spotify:track:")
+    spotify.log.clear()
+    response = logged_in.post("/api/spotify/play_uri", json={"uri": tracks[1]["uri"], "context_uri": "spotify:playlist:chill"})
+    assert response.status_code == 200
+    assert spotify.log[0] == ("play_in_context", "spotify:playlist:chill", tracks[1]["uri"], None)
+
+
+@pytest.mark.parametrize("playlist_id", ["../etc", "a b", "x" * 41])
+def test_playlist_tracks_rejects_bad_ids(logged_in, playlist_id):
+    assert logged_in.get(f"/api/spotify/playlists/{playlist_id}/tracks").status_code in (404, 422)
+
+
+def test_context_uri_must_be_playlist_or_album(logged_in):
+    assert logged_in.post("/api/spotify/play_uri", json={"uri": "spotify:track:abc", "context_uri": "spotify:user:me"}).status_code == 422
+
+
+def test_crossfade_fades_down_skips_and_fades_up(logged_in, monkeypatch):
+    monkeypatch.setattr(main_module.time, "sleep", lambda seconds: None)
+    spotify.log.clear()
+    assert logged_in.post("/api/spotify/crossfade", json={"seconds": 2}).status_code == 200
+    kinds = [entry[0] for entry in spotify.log]
+    assert kinds.count("next") == 1
+    skip = kinds.index("next")
+    down = [entry[1] for entry in spotify.log[:skip] if entry[0] == "volume"]
+    up = [entry[1] for entry in spotify.log[skip:] if entry[0] == "volume"]
+    assert down[-1] == 0 and down == sorted(down, reverse=True)
+    assert up[0] == 0 and up == sorted(up) and up[-1] == down[0]  # back to the starting volume
+
+
+def test_crossfade_rejects_parallel_run_and_bad_seconds(logged_in):
+    assert logged_in.post("/api/spotify/crossfade", json={"seconds": 99}).status_code == 422
+    assert main_module._crossfade_lock.acquire(blocking=False)
+    try:
+        assert logged_in.post("/api/spotify/crossfade").status_code == 409
+    finally:
+        main_module._crossfade_lock.release()

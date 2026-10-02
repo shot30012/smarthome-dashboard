@@ -29,13 +29,29 @@
     <p id="banner" class="banner" role="status" hidden></p>
 
     <section class="card dj" id="dj" aria-labelledby="dj-title" hidden>
-      <h2 id="dj-title">DJ-Pult</h2>
-      <div class="dj-body">
-        <div class="deck" id="dj-deck"></div>
-        <div class="mixer" id="dj-mixer" role="group" aria-label="Lautstärke-Regler pro Gerät"></div>
-        <div class="pads" id="dj-pads" role="group" aria-label="Playlists"></div>
+      <div class="dj-head">
+        <h2 id="dj-title">DJ-Pult</h2>
+        <span class="dj-sub">Aufbau wie djay Pro · steuert Spotify und deine Echos</span>
       </div>
-      <p class="hint">Tastatur: Leertaste = Play/Pause, → nächster Titel, ← vorheriger Titel</p>
+      <div class="dj-decks">
+        <div class="deck deck-a" id="deck-a"></div>
+        <div class="dj-center">
+          <div class="mixer" id="dj-mixer" role="group" aria-label="Lautstärke-Regler pro Gerät"></div>
+          <div class="xfade">
+            <span>A</span>
+            <input type="range" id="xfade" min="-100" max="100" value="-100" aria-label="Crossfader: nach rechts ziehen und loslassen, um in den nächsten Titel zu überblenden">
+            <span>B</span>
+          </div>
+          <p class="xfade-status" id="xfade-status" role="status"></p>
+        </div>
+        <div class="deck deck-b" id="deck-b"></div>
+      </div>
+      <div class="pads" id="dj-pads" role="group" aria-label="Playlists"></div>
+      <div class="library">
+        <ul class="lib-lists" id="lib-lists" aria-label="Playlists"></ul>
+        <div class="lib-tracks" id="lib-tracks" aria-label="Titel"></div>
+      </div>
+      <p class="hint">Plattenteller ziehen = spulen · Wellenform anklicken = springen · Crossfader nach B ziehen = überblenden · Leertaste = Play/Pause</p>
     </section>
 
     <div class="grid">

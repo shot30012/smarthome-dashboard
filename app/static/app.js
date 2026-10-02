@@ -166,8 +166,12 @@ function renderBots(bots) {
   list.replaceChildren(...bots.map((b) => el("li", {}, el("span", { class: `chip ${b.online ? "ok" : "bad"}` }, `${b.name}: ${b.online ? "online" : "offline"}`), b.url ? el("a", { href: b.url, target: "_blank", rel: "noreferrer" }, "öffnen") : null)));
 }
 
-// ---- DJ-Pult
+// ---- DJ-Pult (layout inspired by djay Pro: two decks, mixer with crossfader in the middle, library below)
 const fmt = (ms) => { const s = Math.max(0, Math.round(ms / 1000)); return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`; };
+let libraryPlaylist = null; // { uri, name }
+let libraryRequest = 0;
+let waveSeed = "";
+let waveBars = [];
 
 function fader(value, label, onChange) {
   const input = el("input", { type: "range", min: 0, max: 100, value: value ?? 0, class: "fader", orient: "vertical", "aria-label": label });
@@ -181,46 +185,176 @@ async function loadPlaylists() {
   try {
     playlists = (await api("/api/spotify/playlists")).playlists;
     renderPads();
+    renderLibraryLists();
   } catch (error) {
     playlists = [];
   }
 }
 
 function renderPads() {
-  const pads = $("dj-pads");
-  pads.replaceChildren(...playlists.map((p, index) =>
+  $("dj-pads").replaceChildren(...playlists.map((p, index) =>
     el("button", { class: `pad pad-${index % 4}`, title: p.name, onclick: () => act("/api/spotify/play_uri", { uri: p.uri }) }, p.name)));
+}
+
+function renderLibraryLists() {
+  const lists = $("lib-lists");
+  lists.replaceChildren(...playlists.map((p) => {
+    const button = el("button", { class: libraryPlaylist && libraryPlaylist.uri === p.uri ? "active" : "", onclick: () => openPlaylist(p) }, p.name);
+    return el("li", {}, button);
+  }));
+  if (!libraryPlaylist && playlists.length) openPlaylist(playlists[0]);
+}
+
+async function openPlaylist(playlist) {
+  libraryPlaylist = playlist;
+  const request = ++libraryRequest;
+  for (const button of $("lib-lists").querySelectorAll("button")) button.classList.toggle("active", button.textContent === playlist.name);
+  const box = $("lib-tracks");
+  box.replaceChildren(el("p", { class: "empty" }, "Lade Titel …"));
+  try {
+    const { tracks } = await api(`/api/spotify/playlists/${encodeURIComponent(playlist.uri.split(":")[2])}/tracks`);
+    if (request !== libraryRequest) return;
+    box.replaceChildren(...(tracks.length ? tracks.map((t, index) =>
+      el("button", { class: "track", onclick: () => act("/api/spotify/play_uri", { uri: t.uri, context_uri: playlist.uri }) },
+        el("span", { class: "n" }, String(index + 1)),
+        el("span", { class: "t" }, el("strong", {}, t.title), el("small", {}, t.artist)),
+        el("span", { class: "d" }, fmt(t.duration_ms)),
+      )) : [el("p", { class: "empty" }, "Keine Titel gefunden.")]));
+  } catch (error) {
+    if (request === libraryRequest) box.replaceChildren(el("p", { class: "empty" }, error.message));
+  }
+}
+
+// Decorative waveform: Spotify gives no audio data, so the bars are generated from the title.
+function makeWave(seed) {
+  let h = 2166136261;
+  for (const ch of seed) { h ^= ch.charCodeAt(0); h = Math.imul(h, 16777619); }
+  const random = () => { h += 0x6d2b79f5; let t = h; t = Math.imul(t ^ (t >>> 15), t | 1); t ^= t + Math.imul(t ^ (t >>> 7), t | 61); return ((t ^ (t >>> 14)) >>> 0) / 4294967296; };
+  const bars = [];
+  let phase = random() * 6;
+  for (let i = 0; i < 160; i++) {
+    phase += 0.25 + random() * 0.2;
+    const envelope = 0.45 + 0.35 * Math.sin(i / 160 * Math.PI);
+    bars.push(Math.min(1, Math.max(0.08, envelope * (0.55 + 0.45 * Math.abs(Math.sin(phase))) + random() * 0.18)));
+  }
+  return bars;
+}
+
+function drawWave(position) {
+  const canvas = $("wave-a");
+  if (!canvas) return;
+  const ratio = window.devicePixelRatio || 1;
+  const width = canvas.clientWidth, height = canvas.clientHeight;
+  if (canvas.width !== Math.round(width * ratio)) { canvas.width = Math.round(width * ratio); canvas.height = Math.round(height * ratio); }
+  const g = canvas.getContext("2d");
+  g.setTransform(ratio, 0, 0, ratio, 0, 0);
+  g.clearRect(0, 0, width, height);
+  const duration = lastNow && lastNow.duration_ms ? lastNow.duration_ms : 1;
+  const played = Math.min(1, position / duration);
+  const step = width / waveBars.length;
+  waveBars.forEach((value, i) => {
+    const barHeight = value * height;
+    g.fillStyle = i / waveBars.length <= played ? "#19d3ff" : "#3a4678";
+    g.fillRect(i * step + 1, (height - barHeight) / 2, Math.max(1, step - 2), barHeight);
+  });
+  g.fillStyle = "#fff";
+  g.fillRect(Math.min(width - 2, played * width), 0, 2, height);
+}
+
+function currentPosition() {
+  if (!lastNow) return 0;
+  return lastNow.playing ? Math.min(lastNow.duration_ms, lastNow.progress_ms + (Date.now() - lastSync)) : lastNow.progress_ms;
+}
+
+function setupJog(jog) {
+  let center = null, startAngle = 0, turned = 0, last = 0, base = 0;
+  const angleOf = (event) => Math.atan2(event.clientY - center.y, event.clientX - center.x);
+  jog.addEventListener("pointerdown", (event) => {
+    if (!lastNow) return;
+    const rect = jog.getBoundingClientRect();
+    center = { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
+    startAngle = last = angleOf(event);
+    turned = 0;
+    base = currentPosition();
+    dragging = true;
+    jog.setPointerCapture(event.pointerId);
+    jog.classList.add("scratch");
+  });
+  jog.addEventListener("pointermove", (event) => {
+    if (!center) return;
+    const angle = angleOf(event);
+    let delta = angle - last;
+    if (delta > Math.PI) delta -= 2 * Math.PI;
+    if (delta < -Math.PI) delta += 2 * Math.PI;
+    turned += delta;
+    last = angle;
+    jog.style.setProperty("--turn", `${(turned * 180) / Math.PI}deg`);
+    const label = $("dj-pos");
+    if (label) label.textContent = fmt(Math.max(0, base + (turned / (2 * Math.PI)) * 10000));
+  });
+  const finish = () => {
+    if (!center) return;
+    center = null;
+    jog.classList.remove("scratch");
+    jog.style.removeProperty("--turn");
+    const target = Math.max(0, Math.min(lastNow.duration_ms, base + (turned / (2 * Math.PI)) * 10000));
+    if (Math.abs(turned) > 0.1) act("/api/spotify/seek", { position_ms: Math.round(target) });
+    setTimeout(() => { dragging = false; }, 300);
+  };
+  jog.addEventListener("pointerup", finish);
+  jog.addEventListener("pointercancel", finish);
 }
 
 function renderDJ(state) {
   const sp = state.spotify;
-  const dj = $("dj");
-  dj.hidden = !sp.connected;
+  $("dj").hidden = !sp.connected;
   if (!sp.connected) return;
   loadPlaylists();
   lastNow = sp.now;
   lastSync = Date.now();
   const now = sp.now;
-  const deck = $("dj-deck");
-  deck.replaceChildren(
-    el("div", { class: "now" },
-      now && now.image ? el("img", { src: now.image, alt: "" }) : el("div", { class: "cover" }),
-      el("div", {}, el("strong", { id: "dj-title-now" }, now ? now.title : "Nichts läuft"), el("span", {}, now ? now.artist : "Wähle unten eine Playlist")),
-    ),
-    el("div", { class: "progress" },
-      el("span", { id: "dj-pos" }, fmt(now ? now.progress_ms : 0)),
-      el("input", { type: "range", id: "dj-seek", min: 0, max: now && now.duration_ms ? now.duration_ms : 1, value: now ? now.progress_ms : 0, "aria-label": "Position im Titel" }),
-      el("span", {}, fmt(now ? now.duration_ms : 0)),
-    ),
-    el("div", { class: "controls" },
-      el("button", { "aria-label": "Zurück", onclick: () => act("/api/spotify/previous") }, "⏮"),
-      el("button", { class: "big", "aria-label": now && now.playing ? "Pause" : "Wiedergabe", onclick: () => act(`/api/spotify/${now && now.playing ? "pause" : "play"}`) }, now && now.playing ? "⏸" : "▶"),
-      el("button", { "aria-label": "Weiter", onclick: () => act("/api/spotify/next") }, "⏭"),
+  const seed = now ? `${now.title}|${now.artist}` : "";
+  if (seed !== waveSeed) { waveSeed = seed; waveBars = makeWave(seed || "leer"); }
+
+  // Deck A: what is playing
+  const jog = el("div", { class: `jog${now && now.playing ? " spin" : ""}`, role: "img", "aria-label": "Plattenteller: ziehen zum Vor- und Zurückspulen" },
+    now && now.image ? el("img", { src: now.image, alt: "" }) : el("div", { class: "label" }, "A"));
+  setupJog(jog);
+  const wave = el("canvas", { id: "wave-a", class: "wave", role: "slider", "aria-label": "Position im Titel" });
+  wave.addEventListener("click", (event) => {
+    if (!now || !now.duration_ms) return;
+    const rect = wave.getBoundingClientRect();
+    act("/api/spotify/seek", { position_ms: Math.round(((event.clientX - rect.left) / rect.width) * now.duration_ms) });
+  });
+  $("deck-a").replaceChildren(
+    el("div", { class: "deck-head" }, el("span", { class: "tag" }, "DECK A"), el("span", { class: "dev" }, now && now.device ? now.device : "kein Gerät")),
+    el("div", { class: "deck-main" }, jog, el("div", { class: "meta" }, el("strong", {}, now ? now.title : "Nichts läuft"), el("span", {}, now ? now.artist : "Wähle unten eine Playlist"))),
+    wave,
+    el("div", { class: "times" }, el("span", { id: "dj-pos" }, fmt(currentPosition())), el("span", { id: "dj-rem" }, `-${fmt(now ? now.duration_ms - currentPosition() : 0)}`)),
+    el("div", { class: "transport" },
+      el("button", { "aria-label": "Zum Anfang", title: "Zum Anfang", onclick: () => act("/api/spotify/seek", { position_ms: 0 }) }, "⟲"),
+      el("button", { class: "play", "aria-label": now && now.playing ? "Pause" : "Wiedergabe", onclick: () => act(`/api/spotify/${now && now.playing ? "pause" : "play"}`) }, now && now.playing ? "⏸" : "▶"),
+      el("button", { "aria-label": "Vorheriger Titel", onclick: () => act("/api/spotify/previous") }, "⏮"),
     ),
   );
-  $("dj-seek").addEventListener("change", (event) => act("/api/spotify/seek", { position_ms: Number(event.target.value) }));
+  drawWave(currentPosition());
 
-  const mixer = $("dj-mixer");
+  // Deck B: what is next
+  const queue = sp.queue || [];
+  const next = queue[0];
+  $("deck-b").replaceChildren(
+    el("div", { class: "deck-head" }, el("span", { class: "tag b" }, "DECK B"), el("span", { class: "dev" }, "nächster Titel")),
+    el("div", { class: "deck-main" },
+      el("div", { class: "jog idle" }, next && next.image ? el("img", { src: next.image, alt: "" }) : el("div", { class: "label" }, "B")),
+      el("div", { class: "meta" }, el("strong", {}, next ? next.title : "Warteschlange leer"), el("span", {}, next ? next.artist : "Titel in der Bibliothek anklicken")),
+    ),
+    el("ol", { class: "queue" }, ...queue.slice(1, 4).map((q) => el("li", {}, el("span", {}, q.title), el("small", {}, q.artist)))),
+    el("div", { class: "transport" },
+      el("button", { class: "play b", disabled: next ? null : "", "aria-label": "Nächsten Titel jetzt spielen", onclick: () => act("/api/spotify/next") }, "⏭ Jetzt spielen"),
+    ),
+  );
+
+  // Mixer: one fader per speaker
   const channels = [];
   for (const d of sp.devices || []) {
     channels.push(el("div", { class: `channel${d.active ? " live" : ""}` },
@@ -243,19 +377,39 @@ function renderDJ(state) {
       el("button", { class: "cue", "aria-label": `${p.name} ${playing ? "pausieren" : "abspielen"}`, onclick: () => act(`/api/media/${encodeURIComponent(p.id)}/${playing ? "pause" : "play"}`) }, playing ? "Pause" : "Play"),
     ));
   }
-  mixer.replaceChildren(...(channels.length ? channels : [el("p", { class: "empty" }, "Keine Geräte gefunden.")]));
+  $("dj-mixer").replaceChildren(...(channels.length ? channels : [el("p", { class: "empty" }, "Keine Geräte gefunden.")]));
   renderPads();
 }
 
-// move the progress bar between server polls
+// Crossfader: drag to B and release = fade out, skip to the next track, fade back in.
+function setupCrossfader() {
+  const slider = $("xfade");
+  const status = $("xfade-status");
+  slider.addEventListener("change", async () => {
+    const reachedB = Number(slider.value) >= 90;
+    slider.disabled = true;
+    if (reachedB) {
+      status.textContent = "Überblende …";
+      busyUntil = Date.now() + 8000;
+      try { await api("/api/spotify/crossfade", { seconds: 3 }); status.textContent = ""; }
+      catch (error) { status.textContent = error.message; }
+    }
+    slider.value = -100;
+    slider.disabled = false;
+    refresh(true);
+  });
+}
+
+// keep time labels, waveform playhead and progress moving between server polls
 setInterval(() => {
-  if (!lastNow || !lastNow.playing || dragging || $("dj").hidden) return;
-  const position = Math.min(lastNow.duration_ms, lastNow.progress_ms + (Date.now() - lastSync));
-  const seek = $("dj-seek");
-  if (seek) seek.value = position;
+  if (!lastNow || dragging || $("dj").hidden) return;
+  const position = currentPosition();
   const label = $("dj-pos");
   if (label) label.textContent = fmt(position);
-}, 1000);
+  const remaining = $("dj-rem");
+  if (remaining) remaining.textContent = `-${fmt(lastNow.duration_ms - position)}`;
+  drawWave(position);
+}, 500);
 
 document.addEventListener("pointerdown", (event) => { if (event.target.matches?.("input[type=range]")) dragging = true; });
 document.addEventListener("pointerup", () => { setTimeout(() => { dragging = false; }, 400); });
@@ -337,4 +491,5 @@ $("login-form").addEventListener("submit", async (event) => {
 $("logout").addEventListener("click", async () => { await api("/api/logout", {}).catch(() => undefined); showLogin(); });
 
 setupChat();
+setupCrossfader();
 api("/api/state").then(showApp).catch(showLogin);

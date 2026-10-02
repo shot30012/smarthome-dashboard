@@ -143,6 +143,29 @@ class Spotify:
     def seek(self, position_ms: int) -> None:
         self._api("PUT", "/me/player/seek", params={"position_ms": max(0, position_ms)})
 
+    def queue(self) -> list[dict]:
+        data = self._api("GET", "/me/player/queue") or {}
+        result = []
+        for item in (data.get("queue") or [])[:8]:
+            summary = track_summary(item) or {}
+            result.append({**summary, "uri": item.get("uri", ""), "duration_ms": item.get("duration_ms") or 0})
+        return result
+
+    def playlist_tracks(self, playlist_id: str) -> list[dict]:
+        data = self._api("GET", f"/playlists/{playlist_id}/tracks", params={"limit": 50, "fields": "items(track(uri,name,duration_ms,artists(name),album(images)))"}) or {}
+        result = []
+        for entry in data.get("items") or []:
+            item = (entry or {}).get("track")
+            if not item or not item.get("uri", "").startswith("spotify:track:"):
+                continue
+            summary = track_summary(item) or {}
+            result.append({**summary, "uri": item["uri"], "duration_ms": item.get("duration_ms") or 0})
+        return result
+
+    def play_in_context(self, context_uri: str, track_uri: str, device_id: str | None = None) -> None:
+        params = {"device_id": device_id} if device_id else None
+        self._api("PUT", "/me/player/play", params=params, json={"context_uri": context_uri, "offset": {"uri": track_uri}})
+
     def search(self, query: str, kind: str = "track") -> dict | None:
         data = self._api("GET", "/search", params={"q": query, "type": kind, "limit": 1}) or {}
         items = (data.get(f"{kind}s") or {}).get("items") or []
@@ -190,6 +213,11 @@ class FakeSpotify:
             {"id": "d2", "name": "Echo Wohnzimmer", "active": False, "volume": 20},
             {"id": "d3", "name": "Dominiks Handy", "active": False, "volume": 50},
         ]
+        self._queue = [
+            {"title": "Don't Stop Me Now", "artist": "Queen", "image": "", "uri": "spotify:track:q1", "duration_ms": 209000},
+            {"title": "Under Pressure", "artist": "Queen & David Bowie", "image": "", "uri": "spotify:track:q2", "duration_ms": 248000},
+            {"title": "Another One Bites the Dust", "artist": "Queen", "image": "", "uri": "spotify:track:q3", "duration_ms": 215000},
+        ]
         self._playing = {
             "title": "Bohemian Rhapsody", "artist": "Queen", "image": "", "playing": True, "device": "Echo Küche", "volume": 35,
             "progress_ms": 61000, "duration_ms": 354000,
@@ -222,6 +250,10 @@ class FakeSpotify:
 
     def next(self):
         self.log.append(("next",))
+        if self._queue and self._playing:
+            upcoming = self._queue.pop(0)
+            self._queue.append({**self._playing, "uri": "spotify:track:recycled", "duration_ms": 200000})
+            self._playing.update({"title": upcoming["title"], "artist": upcoming["artist"], "progress_ms": 0, "duration_ms": upcoming.get("duration_ms", 200000)})
 
     def previous(self):
         self.log.append(("previous",))
@@ -234,6 +266,19 @@ class FakeSpotify:
                 device["volume"] = level
                 if self._playing and device["name"] == self._playing["device"]:
                     self._playing["volume"] = level
+
+    def queue(self):
+        return [dict(item) for item in self._queue]
+
+    def playlist_tracks(self, playlist_id):
+        return [
+            {"uri": f"spotify:track:{playlist_id}{n}", "title": f"{playlist_id.title()} Track {n}", "artist": "Demo-Künstler", "image": "", "duration_ms": 180000 + n * 7000}
+            for n in range(1, 7)
+        ]
+
+    def play_in_context(self, context_uri, track_uri, device_id=None):
+        self.log.append(("play_in_context", context_uri, track_uri, device_id))
+        self.play(track_uri, "track", device_id)
 
     def playlists(self):
         return [{"uri": f"spotify:playlist:{key}", "name": name, "image": ""} for key, name in (("chill", "Chill Vibes"), ("party", "Party Hits"), ("focus", "Deep Focus"), ("rock", "Rock Klassiker"))]

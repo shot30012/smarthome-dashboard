@@ -165,3 +165,35 @@ def test_spotify_playlists_seek_and_progress(tmp_path):
     assert ("PUT", "/v1/me/player/seek", {"position_ms": "0"}) in calls
     now = client.now_playing()
     assert now["progress_ms"] == 5000 and now["duration_ms"] == 200000
+
+def test_spotify_queue_and_playlist_tracks(tmp_path):
+    def handler(request):
+        if request.url.host == "accounts.spotify.com":
+            return httpx.Response(200, json={"access_token": "A", "expires_in": 3600})
+        if request.url.path == "/v1/me/player/queue":
+            return httpx.Response(200, json={"queue": [{"uri": "spotify:track:q", "name": "Next", "duration_ms": 1000, "artists": [{"name": "B"}], "album": {}}]})
+        if request.url.path == "/v1/playlists/abc/tracks":
+            return httpx.Response(200, json={"items": [
+                {"track": {"uri": "spotify:track:1", "name": "One", "duration_ms": 5, "artists": [{"name": "A"}], "album": {}}},
+                {"track": {"uri": "spotify:episode:9", "name": "Podcast", "artists": []}},
+                {"track": None},
+            ]})
+        return httpx.Response(204)
+
+    client = spotify_with(handler, tmp_path)
+    assert client.queue()[0]["title"] == "Next"
+    tracks = client.playlist_tracks("abc")
+    assert [t["title"] for t in tracks] == ["One"]  # episodes and removed tracks are skipped
+
+
+def test_spotify_play_in_context_body(tmp_path):
+    bodies = []
+
+    def handler(request):
+        if request.url.host == "accounts.spotify.com":
+            return httpx.Response(200, json={"access_token": "A", "expires_in": 3600})
+        bodies.append(json.loads(request.content))
+        return httpx.Response(204)
+
+    spotify_with(handler, tmp_path).play_in_context("spotify:playlist:p", "spotify:track:t")
+    assert bodies == [{"context_uri": "spotify:playlist:p", "offset": {"uri": "spotify:track:t"}}]
