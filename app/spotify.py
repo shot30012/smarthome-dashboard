@@ -12,7 +12,7 @@ import httpx
 AUTH_URL = "https://accounts.spotify.com/authorize"
 TOKEN_URL = "https://accounts.spotify.com/api/token"
 API = "https://api.spotify.com/v1"
-SCOPES = "user-read-playback-state user-modify-playback-state user-read-currently-playing"
+SCOPES = "user-read-playback-state user-modify-playback-state user-read-currently-playing playlist-read-private"
 
 
 class SpotifyError(RuntimeError):
@@ -121,11 +121,27 @@ class Spotify:
             return None
         summary = track_summary(data["item"]) or {}
         device = data.get("device") or {}
-        return {**summary, "playing": bool(data.get("is_playing")), "device": device.get("name", ""), "volume": device.get("volume_percent")}
+        return {
+            **summary, "playing": bool(data.get("is_playing")), "device": device.get("name", ""), "volume": device.get("volume_percent"),
+            "progress_ms": data.get("progress_ms") or 0, "duration_ms": data["item"].get("duration_ms") or 0,
+        }
 
     def devices(self) -> list[dict]:
         data = self._api("GET", "/me/player/devices") or {}
         return [{"id": d["id"], "name": d["name"], "active": d.get("is_active", False), "volume": d.get("volume_percent")} for d in data.get("devices", [])]
+
+    def playlists(self) -> list[dict]:
+        data = self._api("GET", "/me/playlists", params={"limit": 12}) or {}
+        result = []
+        for item in data.get("items") or []:
+            if not item:
+                continue
+            images = item.get("images") or []
+            result.append({"uri": item["uri"], "name": item.get("name", ""), "image": images[-1]["url"] if images else ""})
+        return result
+
+    def seek(self, position_ms: int) -> None:
+        self._api("PUT", "/me/player/seek", params={"position_ms": max(0, position_ms)})
 
     def search(self, query: str, kind: str = "track") -> dict | None:
         data = self._api("GET", "/search", params={"q": query, "type": kind, "limit": 1}) or {}
@@ -174,7 +190,10 @@ class FakeSpotify:
             {"id": "d2", "name": "Echo Wohnzimmer", "active": False, "volume": 20},
             {"id": "d3", "name": "Dominiks Handy", "active": False, "volume": 50},
         ]
-        self._playing = {"title": "Bohemian Rhapsody", "artist": "Queen", "image": "", "playing": True, "device": "Echo Küche", "volume": 35}
+        self._playing = {
+            "title": "Bohemian Rhapsody", "artist": "Queen", "image": "", "playing": True, "device": "Echo Küche", "volume": 35,
+            "progress_ms": 61000, "duration_ms": 354000,
+        }
 
     def now_playing(self):
         return dict(self._playing) if self._playing else None
@@ -209,11 +228,20 @@ class FakeSpotify:
 
     def volume(self, percent, device_id=None):
         self.log.append(("volume", percent, device_id))
+        level = max(0, min(100, percent))
         for device in self._devices:
-            if device["active"] or device["id"] == device_id:
-                device["volume"] = max(0, min(100, percent))
+            if (device["id"] == device_id) if device_id else device["active"]:
+                device["volume"] = level
+                if self._playing and device["name"] == self._playing["device"]:
+                    self._playing["volume"] = level
+
+    def playlists(self):
+        return [{"uri": f"spotify:playlist:{key}", "name": name, "image": ""} for key, name in (("chill", "Chill Vibes"), ("party", "Party Hits"), ("focus", "Deep Focus"), ("rock", "Rock Klassiker"))]
+
+    def seek(self, position_ms):
+        self.log.append(("seek", position_ms))
         if self._playing:
-            self._playing["volume"] = max(0, min(100, percent))
+            self._playing["progress_ms"] = max(0, position_ms)
 
     def transfer(self, device_id):
         self.log.append(("transfer", device_id))

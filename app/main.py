@@ -105,6 +105,8 @@ class LevelBody(BaseModel):
 
 class SpotifyBody(BaseModel):
     level: int | None = Field(default=None, ge=0, le=100)
+    position_ms: int | None = Field(default=None, ge=0, le=36_000_000)
+    uri: str | None = Field(default=None, pattern=r"^spotify:(track|album|artist|playlist):[A-Za-z0-9]{1,40}$")
     device_id: str | None = Field(default=None, min_length=1, max_length=200)
 
 
@@ -232,7 +234,12 @@ def spotify_action(action: str, body: SpotifyBody | None = None):
         elif action == "previous":
             spotify.previous()
         elif action == "volume" and body.level is not None:
-            spotify.volume(body.level)
+            spotify.volume(body.level, body.device_id)
+        elif action == "seek" and body.position_ms is not None:
+            spotify.seek(body.position_ms)
+        elif action == "play_uri" and body.uri is not None:
+            kind = body.uri.split(":")[1]
+            spotify.play(body.uri, kind, body.device_id)
         elif action == "transfer" and body.device_id is not None:
             spotify.transfer(body.device_id)
         else:
@@ -240,6 +247,13 @@ def spotify_action(action: str, body: SpotifyBody | None = None):
 
     run(do)
     return {"ok": True}
+
+
+@app.get("/api/spotify/playlists", dependencies=[Depends(require_login)])
+def spotify_playlists():
+    if not (spotify.configured and spotify.connected):
+        return {"playlists": []}
+    return {"playlists": run(spotify.playlists)}
 
 
 @app.post("/api/chat", dependencies=[Depends(require_login)])

@@ -5,6 +5,11 @@ const SUGGESTIONS = ["Licht im Wohnzimmer an", "Alle Lichter aus", "Spiel Queen"
 let pollTimer = null;
 let speakOn = localStorage.getItem("sh-speak") === "on";
 let busyUntil = 0; // pause polling briefly after a user action so sliders don't jump back
+let dragging = false; // a fader is being moved: don't redraw underneath it
+let lastNow = null; // last Spotify state, used to animate the progress bar between polls
+let lastSync = 0;
+let playlistsLoadedAt = 0;
+let playlists = [];
 
 // All text from Home Assistant / Spotify is inserted with textContent, never as HTML.
 function el(tag, props = {}, ...children) {
@@ -70,7 +75,7 @@ async function act(path, body) {
 }
 
 async function refresh(force) {
-  if (!force && Date.now() < busyUntil) return;
+  if (!force && (Date.now() < busyUntil || dragging)) return;
   let state;
   try {
     state = await api("/api/state");
@@ -88,6 +93,7 @@ async function refresh(force) {
   renderToggles($("light-list"), state.entities.filter((e) => e.domain === "light"), true);
   renderToggles($("other-list"), state.entities.filter((e) => e.domain === "switch" || e.domain === "fan"), false);
   renderBots(state.bots);
+  renderDJ(state);
 }
 
 function slider(value, onChange, label) {
@@ -159,6 +165,104 @@ function renderBots(bots) {
   const list = $("bot-list");
   list.replaceChildren(...bots.map((b) => el("li", {}, el("span", { class: `chip ${b.online ? "ok" : "bad"}` }, `${b.name}: ${b.online ? "online" : "offline"}`), b.url ? el("a", { href: b.url, target: "_blank", rel: "noreferrer" }, "öffnen") : null)));
 }
+
+// ---- DJ-Pult
+const fmt = (ms) => { const s = Math.max(0, Math.round(ms / 1000)); return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`; };
+
+function fader(value, label, onChange) {
+  const input = el("input", { type: "range", min: 0, max: 100, value: value ?? 0, class: "fader", orient: "vertical", "aria-label": label });
+  input.addEventListener("change", () => onChange(Number(input.value)));
+  return input;
+}
+
+async function loadPlaylists() {
+  if (Date.now() - playlistsLoadedAt < 60000) return;
+  playlistsLoadedAt = Date.now();
+  try {
+    playlists = (await api("/api/spotify/playlists")).playlists;
+    renderPads();
+  } catch (error) {
+    playlists = [];
+  }
+}
+
+function renderPads() {
+  const pads = $("dj-pads");
+  pads.replaceChildren(...playlists.map((p, index) =>
+    el("button", { class: `pad pad-${index % 4}`, title: p.name, onclick: () => act("/api/spotify/play_uri", { uri: p.uri }) }, p.name)));
+}
+
+function renderDJ(state) {
+  const sp = state.spotify;
+  const dj = $("dj");
+  dj.hidden = !sp.connected;
+  if (!sp.connected) return;
+  loadPlaylists();
+  lastNow = sp.now;
+  lastSync = Date.now();
+  const now = sp.now;
+  const deck = $("dj-deck");
+  deck.replaceChildren(
+    el("div", { class: "now" },
+      now && now.image ? el("img", { src: now.image, alt: "" }) : el("div", { class: "cover" }),
+      el("div", {}, el("strong", { id: "dj-title-now" }, now ? now.title : "Nichts läuft"), el("span", {}, now ? now.artist : "Wähle unten eine Playlist")),
+    ),
+    el("div", { class: "progress" },
+      el("span", { id: "dj-pos" }, fmt(now ? now.progress_ms : 0)),
+      el("input", { type: "range", id: "dj-seek", min: 0, max: now && now.duration_ms ? now.duration_ms : 1, value: now ? now.progress_ms : 0, "aria-label": "Position im Titel" }),
+      el("span", {}, fmt(now ? now.duration_ms : 0)),
+    ),
+    el("div", { class: "controls" },
+      el("button", { "aria-label": "Zurück", onclick: () => act("/api/spotify/previous") }, "⏮"),
+      el("button", { class: "big", "aria-label": now && now.playing ? "Pause" : "Wiedergabe", onclick: () => act(`/api/spotify/${now && now.playing ? "pause" : "play"}`) }, now && now.playing ? "⏸" : "▶"),
+      el("button", { "aria-label": "Weiter", onclick: () => act("/api/spotify/next") }, "⏭"),
+    ),
+  );
+  $("dj-seek").addEventListener("change", (event) => act("/api/spotify/seek", { position_ms: Number(event.target.value) }));
+
+  const mixer = $("dj-mixer");
+  const channels = [];
+  for (const d of sp.devices || []) {
+    channels.push(el("div", { class: `channel${d.active ? " live" : ""}` },
+      el("span", { class: "led", "aria-hidden": "true" }),
+      fader(d.volume, `${d.name} Lautstärke`, (level) => act("/api/spotify/volume", { level, device_id: d.id })),
+      el("strong", {}, d.name),
+      el("small", {}, d.volume != null ? `${d.volume} %` : ""),
+      el("button", { class: "cue", "aria-label": `Auf ${d.name} abspielen`, onclick: () => act("/api/spotify/transfer", { device_id: d.id }) }, d.active ? "LIVE" : "Abspielen"),
+    ));
+  }
+  for (const p of state.entities.filter((e) => e.domain === "media_player")) {
+    const playing = p.state === "playing";
+    channels.push(el("div", { class: `channel echo${playing ? " live" : ""}` },
+      el("span", { class: "led", "aria-hidden": "true" }),
+      fader(p.volume, `${p.name} Lautstärke`, (level) => act(`/api/media/${encodeURIComponent(p.id)}/volume`, { level })),
+      el("strong", {}, p.name),
+      el("small", {}, p.volume != null ? `${p.volume} % · Alexa` : "Alexa"),
+      el("button", { class: "cue", "aria-label": `${p.name} ${playing ? "pausieren" : "abspielen"}`, onclick: () => act(`/api/media/${encodeURIComponent(p.id)}/${playing ? "pause" : "play"}`) }, playing ? "Pause" : "Play"),
+    ));
+  }
+  mixer.replaceChildren(...(channels.length ? channels : [el("p", { class: "empty" }, "Keine Geräte gefunden.")]));
+  renderPads();
+}
+
+// move the progress bar between server polls
+setInterval(() => {
+  if (!lastNow || !lastNow.playing || dragging || $("dj").hidden) return;
+  const position = Math.min(lastNow.duration_ms, lastNow.progress_ms + (Date.now() - lastSync));
+  const seek = $("dj-seek");
+  if (seek) seek.value = position;
+  const label = $("dj-pos");
+  if (label) label.textContent = fmt(position);
+}, 1000);
+
+document.addEventListener("pointerdown", (event) => { if (event.target.matches?.("input[type=range]")) dragging = true; });
+document.addEventListener("pointerup", () => { setTimeout(() => { dragging = false; }, 400); });
+document.addEventListener("keydown", (event) => {
+  if (event.target.matches?.("input:not([type=range]), select, textarea") || $("dj").hidden || $("app").hidden) return;
+  if (event.code === "Space") { event.preventDefault(); act(`/api/spotify/${lastNow && lastNow.playing ? "pause" : "play"}`); }
+  else if (event.code === "ArrowRight" && !event.target.matches?.("input")) act("/api/spotify/next");
+  else if (event.code === "ArrowLeft" && !event.target.matches?.("input")) act("/api/spotify/previous");
+});
 
 // ---- chat
 function addMessage(text, who) {

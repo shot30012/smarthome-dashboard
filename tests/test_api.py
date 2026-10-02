@@ -2,6 +2,14 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.main import app, ha, spotify
+from app import main as main_module
+
+
+@pytest.fixture(autouse=True)
+def fresh_login_counter():
+    main_module._attempts.clear()
+    yield
+    main_module._attempts.clear()
 
 
 @pytest.fixture
@@ -88,3 +96,25 @@ def test_login_lockout_after_failures(client):
         assert client.post("/api/login", json={"password": "falsch"}).status_code == 401
     assert client.post("/api/login", json={"password": "falsch"}).status_code == 429
     assert client.post("/api/login", json={"password": "demo"}).status_code == 429  # even the right one while locked
+
+def test_dj_pult_endpoints(logged_in):
+    playlists = logged_in.get("/api/spotify/playlists").json()["playlists"]
+    assert len(playlists) >= 3 and playlists[0]["uri"].startswith("spotify:playlist:")
+    spotify.log.clear()
+    assert logged_in.post("/api/spotify/play_uri", json={"uri": playlists[0]["uri"], "device_id": "d2"}).status_code == 200
+    assert spotify.log[-1] == ("play", playlists[0]["uri"], "playlist", "d2")
+    assert logged_in.post("/api/spotify/seek", json={"position_ms": 90000}).status_code == 200
+    assert spotify.log[-1] == ("seek", 90000)
+    assert logged_in.post("/api/spotify/volume", json={"level": 12, "device_id": "d2"}).status_code == 200
+    assert spotify.log[-1] == ("volume", 12, "d2")
+    now = logged_in.get("/api/state").json()["spotify"]["now"]
+    assert now["duration_ms"] > 0 and "progress_ms" in now
+
+
+@pytest.mark.parametrize("uri", ["http://evil.example", "spotify:playlist:../../x", "spotify:user:abc", "spotify:track:" + "a" * 60])
+def test_play_uri_rejects_bad_uris(logged_in, uri):
+    assert logged_in.post("/api/spotify/play_uri", json={"uri": uri}).status_code == 422
+
+
+def test_seek_rejects_negative(logged_in):
+    assert logged_in.post("/api/spotify/seek", json={"position_ms": -5}).status_code == 422

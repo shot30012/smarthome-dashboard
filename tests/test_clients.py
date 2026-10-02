@@ -144,3 +144,24 @@ def test_spotify_authorize_url_and_exchange(tmp_path):
     client.exchange_code("code")
     assert client.connected
     assert json.loads((tmp_path / "spotify_token.json").read_text())["refresh_token"] == "NEWREFRESH"
+
+
+def test_spotify_playlists_seek_and_progress(tmp_path):
+    calls = []
+
+    def handler(request):
+        if request.url.host == "accounts.spotify.com":
+            return httpx.Response(200, json={"access_token": "A", "expires_in": 3600})
+        calls.append((request.method, request.url.path, dict(request.url.params)))
+        if request.url.path == "/v1/me/playlists":
+            return httpx.Response(200, json={"items": [{"uri": "spotify:playlist:1", "name": "Chill", "images": [{"url": "http://i"}]}, None]})
+        if request.url.path == "/v1/me/player":
+            return httpx.Response(200, json={"is_playing": True, "progress_ms": 5000, "device": {"name": "Echo"}, "item": {"name": "S", "duration_ms": 200000, "artists": [], "album": {}}})
+        return httpx.Response(204)
+
+    client = spotify_with(handler, tmp_path)
+    assert client.playlists() == [{"uri": "spotify:playlist:1", "name": "Chill", "image": "http://i"}]
+    client.seek(-3)
+    assert ("PUT", "/v1/me/player/seek", {"position_ms": "0"}) in calls
+    now = client.now_playing()
+    assert now["progress_ms"] == 5000 and now["duration_ms"] == 200000
