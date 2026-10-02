@@ -1,0 +1,47 @@
+:root{--bg:#f4f6fb;--card:#fff;--ink:#1a2233;--muted:#667085;--line:#e3e7ef;--accent:#4f5fd6;--accent-ink:#fff;--on:#0b8b72;--bad:#c8394d;--warn:#b96d11;--bubble:#eef0ff}
+@media(prefers-color-scheme:dark){:root{--bg:#0e1420;--card:#161e2d;--ink:#e7ebf3;--muted:#98a3b8;--line:#2a3447;--accent:#8b97ff;--accent-ink:#0e1420;--on:#3fd0b0;--bad:#ff8a9a;--warn:#f0b35a;--bubble:#222c44}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.45 system-ui,-apple-system,"Segoe UI",sans-serif}
+button,input,select{font:inherit;color:inherit}
+button{cursor:pointer}
+[hidden]{display:none!important}
+.top{display:flex;flex-wrap:wrap;align-items:center;gap:8px;padding:14px 16px;max-width:1200px;margin:0 auto}
+.top h1{font-size:1.25rem;margin:0 auto 0 0}
+.chip{padding:3px 10px;border-radius:999px;border:1px solid var(--line);font-size:.8rem;color:var(--muted)}
+.chip.ok{color:var(--on);border-color:var(--on)}.chip.bad{color:var(--bad);border-color:var(--bad)}.chip.warn{color:var(--warn);border-color:var(--warn)}
+.banner{max-width:1200px;margin:0 auto 8px;padding:10px 16px;color:var(--bad)}
+.grid{display:grid;gap:14px;grid-template-columns:repeat(auto-fit,minmax(min(100%,340px),1fr));padding:0 16px 24px;max-width:1200px;margin:0 auto}
+.card{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:16px}
+.card h2{font-size:1rem;margin:0 0 12px}
+.list{display:flex;flex-direction:column;gap:10px}
+.row{display:grid;grid-template-columns:1fr auto;align-items:center;gap:6px 12px;min-height:44px}
+.row small{color:var(--muted);display:block}
+.row input[type=range]{grid-column:1/-1;width:100%;accent-color:var(--accent)}
+.empty{color:var(--muted);margin:0}
+.switch{min-width:64px;min-height:44px;padding:0 14px;border-radius:22px;border:1px solid var(--line);background:transparent;font-weight:650}
+.switch[aria-pressed=true]{background:var(--on);border-color:var(--on);color:#fff}
+.controls{display:flex;gap:8px;flex-wrap:wrap}
+.controls button,.ghost,.icon{min-height:44px;min-width:44px;padding:0 14px;border-radius:12px;border:1px solid var(--line);background:transparent}
+.primary{min-height:44px;padding:0 18px;border-radius:12px;border:0;background:var(--accent);color:var(--accent-ink);font-weight:650}
+.now{display:grid;grid-template-columns:64px 1fr;gap:12px;align-items:center;margin-bottom:12px}
+.now img,.now .cover{width:64px;height:64px;border-radius:10px;background:var(--line);object-fit:cover}
+.now strong{display:block}.now span{color:var(--muted);font-size:.9rem}
+select{width:100%;min-height:44px;margin-top:10px;padding:0 10px;border-radius:12px;border:1px solid var(--line);background:var(--card)}
+.chat{grid-column:1/-1}
+.bots{list-style:none;margin:0 0 10px;padding:0;display:flex;gap:8px;flex-wrap:wrap}
+.bots li{display:inline-flex;gap:6px;align-items:center}
+.chat-log{height:240px;overflow-y:auto;display:flex;flex-direction:column;gap:8px;padding:8px;border:1px solid var(--line);border-radius:12px}
+.msg{max-width:85%;padding:8px 12px;border-radius:14px;white-space:pre-wrap;overflow-wrap:anywhere}
+.msg.bot{align-self:flex-start;background:var(--bubble)}.msg.user{align-self:flex-end;background:var(--accent);color:var(--accent-ink)}
+.chips{display:flex;gap:6px;flex-wrap:wrap;margin:8px 0}
+.chips button{min-height:36px;padding:0 12px;border-radius:18px;border:1px solid var(--line);background:transparent;font-size:.85rem}
+.chat-form{display:flex;gap:8px}
+.chat-form input{flex:1;min-width:0;min-height:44px;padding:0 12px;border-radius:12px;border:1px solid var(--line);background:var(--bg)}
+.mic-on{background:var(--bad)!important;color:#fff;border-color:var(--bad)!important}
+.login{min-height:100vh;display:grid;place-items:center;padding:16px}
+.login .card{width:min(100%,360px);display:flex;flex-direction:column;gap:12px}
+.login label{display:flex;flex-direction:column;gap:6px}
+.login input{min-height:44px;padding:0 12px;border-radius:12px;border:1px solid var(--line);background:var(--bg)}
+.error{color:var(--bad);margin:0;min-height:1.4em}
+:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+@media(prefers-reduced-motion:no-preference){.mic-on{animation:pulse 1.2s infinite}@keyframes pulse{50%{opacity:.6}}}

@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Smarthome</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <main id="login" class="login" hidden>
+    <form id="login-form" class="card">
+      <h1>Smarthome</h1>
+      <label>Passwort
+        <input id="password" type="password" autocomplete="current-password" required>
+      </label>
+      <p id="login-error" class="error" role="alert"></p>
+      <button class="primary" type="submit">Anmelden</button>
+    </form>
+  </main>
+
+  <div id="app" hidden>
+    <header class="top">
+      <h1>Smarthome</h1>
+      <span id="demo-badge" class="chip warn" hidden>Demo-Modus</span>
+      <span id="ha-chip" class="chip">Home Assistant</span>
+      <span id="sp-chip" class="chip">Spotify</span>
+      <button id="logout" class="ghost">Abmelden</button>
+    </header>
+    <p id="banner" class="banner" role="status" hidden></p>
+
+    <div class="grid">
+      <section class="card" id="spotify-card" aria-labelledby="sp-title">
+        <h2 id="sp-title">Spotify</h2>
+        <div id="spotify-body"></div>
+      </section>
+
+      <section class="card" aria-labelledby="alexa-title">
+        <h2 id="alexa-title">Alexa / Echo</h2>
+        <div id="media-list" class="list"></div>
+      </section>
+
+      <section class="card" aria-labelledby="light-title">
+        <h2 id="light-title">Licht</h2>
+        <div id="light-list" class="list"></div>
+      </section>
+
+      <section class="card" aria-labelledby="other-title">
+        <h2 id="other-title">Steckdosen &amp; Ventilatoren</h2>
+        <div id="other-list" class="list"></div>
+      </section>
+
+      <section class="card chat" aria-labelledby="chat-title">
+        <h2 id="chat-title">Chatbots</h2>
+        <ul id="bot-list" class="bots"></ul>
+        <div id="chat-log" class="chat-log" aria-live="polite"></div>
+        <div class="chips" id="suggestions"></div>
+        <form id="chat-form" class="chat-form">
+          <input id="chat-input" maxlength="300" placeholder="z. B. Licht im Wohnzimmer an" aria-label="Nachricht an den Smarthome-Bot" autocomplete="off">
+          <button type="button" id="mic" class="icon" aria-label="Sprechen" hidden>🎤</button>
+          <button type="button" id="speak" class="icon" aria-pressed="false" aria-label="Antworten vorlesen">🔇</button>
+          <button class="primary" type="submit">Senden</button>
+        </form>
+      </section>
+    </div>
+  </div>
+  <script src="/static/app.js"></script>
+</body>
+</html>
