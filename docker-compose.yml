@@ -1,0 +1,68 @@
+services:
+  app:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DATA_DIR: /srv/dashboard/data
+    volumes:
+      - dashboard_data:/srv/dashboard/data
+    expose:
+      - "8765"
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=16m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 128
+    mem_limit: 256m
+
+  caddy:
+    image: caddy:2.10-alpine
+    restart: unless-stopped
+    environment:
+      DASHBOARD_DOMAIN: ${DASHBOARD_DOMAIN}
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - app
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 128
+    mem_limit: 256m
+
+  # Keeps the DuckDNS name pointed at this server's public IP. Remove it if the name is updated elsewhere.
+  duckdns:
+    image: curlimages/curl:8.13.0
+    restart: unless-stopped
+    env_file: .env
+    command:
+      - /bin/sh
+      - -c
+      - |
+        while true; do
+          curl --fail --silent --show-error "https://www.duckdns.org/update?domains=$${DUCKDNS_SUBDOMAIN}&token=$${DUCKDNS_TOKEN}&ip="
+          sleep 300
+        done
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=16m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 32
+    mem_limit: 64m
+
+volumes:
+  dashboard_data:
+  caddy_data:
+  caddy_config:

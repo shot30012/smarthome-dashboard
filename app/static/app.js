@@ -110,7 +110,7 @@ function renderSpotify(sp) {
     return;
   }
   if (!sp.connected) {
-    body.append(el("p", { class: "empty" }, "Verbinde dein Spotify-Premium-Konto einmalig."), el("a", { class: "primary", href: "/spotify/login", style: "display:inline-grid;place-items:center;text-decoration:none" }, "Spotify verbinden"));
+    body.append(el("p", { class: "empty" }, "Verbinde dein Spotify-Premium-Konto einmalig."), el("a", { class: "primary link", href: "/spotify/login" }, "Spotify verbinden"));
     return;
   }
   const now = sp.now;

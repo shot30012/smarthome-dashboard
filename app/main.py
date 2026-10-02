@@ -94,6 +94,9 @@ async def same_origin_writes(request: Request, call_next):
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["X-Frame-Options"] = "DENY"
     response.headers["Referrer-Policy"] = "no-referrer"
+    response.headers["Content-Security-Policy"] = (
+        "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: https://*.scdn.co; connect-src 'self'; frame-ancestors 'none'; object-src 'none'; base-uri 'self'; form-action 'self'"
+    )
     response.headers["Permissions-Policy"] = "camera=(), microphone=(self), geolocation=()"
     return response
 

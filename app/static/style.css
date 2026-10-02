@@ -22,6 +22,7 @@ button{cursor:pointer}
 .switch[aria-pressed=true]{background:var(--on);border-color:var(--on);color:#fff}
 .controls{display:flex;gap:8px;flex-wrap:wrap}
 .controls button,.ghost,.icon{min-height:44px;min-width:44px;padding:0 14px;border-radius:12px;border:1px solid var(--line);background:transparent}
+.primary.link{display:inline-grid;place-items:center;text-decoration:none}
 .primary{min-height:44px;padding:0 18px;border-radius:12px;border:0;background:var(--accent);color:var(--accent-ink);font-weight:650}
 .now{display:grid;grid-template-columns:64px 1fr;gap:12px;align-items:center;margin-bottom:12px}
 .now img,.now .cover{width:64px;height:64px;border-radius:10px;background:var(--line);object-fit:cover}
