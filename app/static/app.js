@@ -40,7 +40,7 @@ async function api(path, body) {
     throw error;
   }
   const data = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(data.detail || "Das hat nicht geklappt.");
+  if (!response.ok) throw new Error(data.detail || `Das hat nicht geklappt (Status ${response.status}).`);
   return data;
 }
 
@@ -437,12 +437,17 @@ function setupCrossfader() {
       status.textContent = "Überblende …";
       busyUntil = Date.now() + 8000;
       const loaded = deckB;
+      const volumeBefore = lastNow && lastNow.volume != null ? lastNow.volume : null;
       try {
         await api("/api/spotify/crossfade", { seconds: 3, ...(loaded ? { uri: loaded.uri } : {}) });
         if (loaded) setDeckB(null);
         status.textContent = "";
       }
-      catch (error) { status.textContent = error.message; }
+      catch (error) {
+        status.textContent = error.message;
+        // If the fade was interrupted the speaker may still be turned down: put the volume back.
+        if (volumeBefore !== null) await api("/api/spotify/volume", { level: volumeBefore }).catch(() => undefined);
+      }
     }
     slider.value = -100;
     slider.disabled = false;

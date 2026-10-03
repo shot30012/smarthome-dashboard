@@ -187,3 +187,51 @@ def test_deck_b_only_accepts_single_tracks(logged_in):
     for uri in ("spotify:playlist:chill", "spotify:album:abc"):
         assert logged_in.post("/api/spotify/crossfade", json={"uri": uri}).status_code == 400
     assert logged_in.post("/api/spotify/crossfade", json={"uri": "https://evil.example"}).status_code == 422
+
+def test_crossfade_restores_the_volume_when_the_track_change_fails(logged_in, monkeypatch):
+    from app.spotify import SpotifyError
+
+    monkeypatch.setattr(main_module.time, "sleep", lambda seconds: None)
+    start = spotify.now_playing()["volume"]
+    spotify.log.clear()
+
+    def broken_next():
+        raise SpotifyError("Spotify meldet einen Fehler (HTTP 500).")
+
+    monkeypatch.setattr(spotify, "next", broken_next)
+    assert logged_in.post("/api/spotify/crossfade", json={"seconds": 2}).status_code == 502
+    volumes = [entry[1] for entry in spotify.log if entry[0] == "volume"]
+    assert volumes[-1] == start, "the speaker must not stay turned down after a failed change"
+    assert min(volumes) == 0, "it did fade down first"
+
+
+def test_crossfade_cuts_when_the_device_has_no_volume_control(logged_in, monkeypatch):
+    from app.spotify import SpotifyError
+
+    monkeypatch.setattr(main_module.time, "sleep", lambda seconds: None)
+    spotify.log.clear()
+
+    def no_volume(percent, device_id=None):
+        raise SpotifyError("Spotify erlaubt das nicht.")
+
+    monkeypatch.setattr(spotify, "volume", no_volume)
+    assert logged_in.post("/api/spotify/crossfade", json={"seconds": 2}).status_code == 200
+    assert [entry[0] for entry in spotify.log] == ["next"], "track still changes, just without fading"
+
+
+def test_crossfade_fails_cleanly_when_even_restoring_fails(logged_in, monkeypatch):
+    from app.spotify import SpotifyError
+
+    monkeypatch.setattr(main_module.time, "sleep", lambda seconds: None)
+
+    def broken(*args, **kwargs):
+        raise SpotifyError("Spotify ist nicht erreichbar.")
+
+    monkeypatch.setattr(spotify, "next", broken)
+    monkeypatch.setattr(spotify, "volume", broken)
+    response = logged_in.post("/api/spotify/crossfade", json={"seconds": 2})
+    # volume is unusable, so it cuts, the cut fails, and the restore attempt fails too: a clean 502, no crash
+    assert response.status_code == 502
+    assert "nicht erreichbar" in response.json()["detail"]
+    assert main_module._crossfade_lock.acquire(blocking=False), "the lock is released after a failure"
+    main_module._crossfade_lock.release()

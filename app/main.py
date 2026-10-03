@@ -333,17 +333,36 @@ def spotify_crossfade(body: SpotifyBody | None = None):
         start = 50 if start is None else start
         steps = 6
         pause = seconds / 2 / steps
-        for i in range(steps, -1, -1):
-            spotify.volume(round(start * i / steps), body.device_id)
-            time.sleep(pause)
-        if body.uri:
-            spotify.play(body.uri, "track", body.device_id)  # the track loaded on deck B
-        else:
-            spotify.next()
-        time.sleep(min(0.5, pause))
-        for i in range(steps + 1):
-            spotify.volume(round(start * i / steps), body.device_id)
-            time.sleep(pause)
+
+        def restore():
+            # Whatever goes wrong, never leave the speaker turned down: that would sound like "the music stopped".
+            try:
+                spotify.volume(start, body.device_id)
+            except SpotifyError:
+                pass
+
+        fade = True
+        try:
+            for i in range(steps, -1, -1):
+                spotify.volume(round(start * i / steps), body.device_id)
+                time.sleep(pause)
+        except SpotifyError:
+            # This device may not allow volume control (or Spotify is rate limiting): cut instead of fading.
+            fade = False
+            restore()
+        try:
+            if body.uri:
+                spotify.play(body.uri, "track", body.device_id)  # the track loaded on deck B
+            else:
+                spotify.next()
+            time.sleep(min(0.5, pause))
+            if fade:
+                for i in range(steps + 1):
+                    spotify.volume(round(start * i / steps), body.device_id)
+                    time.sleep(pause)
+        except SpotifyError:
+            restore()
+            raise
 
     try:
         run(do)
