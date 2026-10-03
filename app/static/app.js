@@ -189,6 +189,19 @@ let libraryPlaylist = null; // { uri, name }
 let libraryRequest = 0;
 let waveSeed = "";
 let waveBars = [];
+let lastState = null;
+// Track the user loaded on deck B ("→ B" in the library): { uri, title, artist, image, duration_ms }.
+// Kept in sessionStorage so a reload does not empty the deck.
+let deckB = null;
+try { deckB = JSON.parse(sessionStorage.getItem("sh-deck-b") || "null"); } catch (error) { deckB = null; }
+function setDeckB(track) {
+  deckB = track;
+  try {
+    if (track) sessionStorage.setItem("sh-deck-b", JSON.stringify(track));
+    else sessionStorage.removeItem("sh-deck-b");
+  } catch (error) { /* storage unavailable: the deck just empties on reload */ }
+  if (lastState) renderDJ(lastState);
+}
 
 function fader(value, label, onChange) {
   const input = el("input", { type: "range", min: 0, max: 100, value: value ?? 0, class: "fader", orient: "vertical", "aria-label": label });
@@ -232,10 +245,14 @@ async function openPlaylist(playlist) {
     const { tracks } = await api(`/api/spotify/playlists/${encodeURIComponent(playlist.uri.split(":")[2])}/tracks`);
     if (request !== libraryRequest) return;
     box.replaceChildren(...(tracks.length ? tracks.map((t, index) =>
-      el("button", { class: "track", onclick: () => act("/api/spotify/play_uri", { uri: t.uri, context_uri: playlist.uri }) },
-        el("span", { class: "n" }, String(index + 1)),
-        el("span", { class: "t" }, el("strong", {}, t.title), el("small", {}, t.artist)),
-        el("span", { class: "d" }, fmt(t.duration_ms)),
+      el("div", { class: "track-row" },
+        el("button", { class: "track", title: "Auf Deck A spielen", onclick: () => act("/api/spotify/play_uri", { uri: t.uri, context_uri: playlist.uri }) },
+          el("span", { class: "n" }, String(index + 1)),
+          el("span", { class: "t" }, el("strong", {}, t.title), el("small", {}, t.artist)),
+          el("span", { class: "d" }, fmt(t.duration_ms)),
+        ),
+        el("button", { class: "load-b", title: "Auf Deck B laden", "aria-label": `${t.title} auf Deck B laden`,
+          onclick: () => setDeckB({ uri: t.uri, title: t.title, artist: t.artist, image: t.image || "", duration_ms: t.duration_ms }) }, "→ B"),
       )) : [el("p", { class: "empty" }, "Keine Titel gefunden.")]));
   } catch (error) {
     if (request === libraryRequest) box.replaceChildren(el("p", { class: "empty" }, error.message));
@@ -323,6 +340,7 @@ function setupJog(jog) {
 }
 
 function renderDJ(state) {
+  lastState = state;
   const sp = state.spotify;
   $("dj").hidden = !sp.connected;
   if (!sp.connected) return;
@@ -356,20 +374,30 @@ function renderDJ(state) {
   );
   drawWave(currentPosition());
 
-  // Deck B: what is next
+  // Deck B: the track loaded with "→ B", otherwise simply the next track in Spotify's queue
   const queue = sp.queue || [];
-  const next = queue[0];
-  $("deck-b").replaceChildren(
-    el("div", { class: "deck-head" }, el("span", { class: "tag b" }, "DECK B"), el("span", { class: "dev" }, "nächster Titel")),
+  const loaded = deckB;
+  const next = loaded || queue[0];
+  // replaceChildren() would print a literal "null" for empty slots, so drop them first.
+  $("deck-b").replaceChildren(...[
+    el("div", { class: "deck-head" }, el("span", { class: "tag b" }, "DECK B"), el("span", { class: "dev" }, loaded ? "geladen" : "nächster Titel")),
     el("div", { class: "deck-main" },
       el("div", { class: "jog idle" }, next && next.image ? el("img", { src: next.image, alt: "" }) : el("div", { class: "label" }, "B")),
-      el("div", { class: "meta" }, el("strong", {}, next ? next.title : "Warteschlange leer"), el("span", {}, next ? next.artist : "Titel in der Bibliothek anklicken")),
+      el("div", { class: "meta" },
+        el("strong", {}, next ? next.title : "Deck B ist leer"),
+        el("span", {}, next ? `${next.artist}${loaded && loaded.duration_ms ? " · " + fmt(loaded.duration_ms) : ""}` : "In der Bibliothek „→ B“ antippen"),
+      ),
     ),
-    el("ol", { class: "queue" }, ...queue.slice(1, 4).map((q) => el("li", {}, el("span", {}, q.title), el("small", {}, q.artist)))),
+    loaded ? null : el("ol", { class: "queue" }, ...queue.slice(1, 4).map((q) => el("li", {}, el("span", {}, q.title), el("small", {}, q.artist)))),
     el("div", { class: "transport" },
-      el("button", { class: "play b", disabled: next ? null : "", "aria-label": "Nächsten Titel jetzt spielen", onclick: () => act("/api/spotify/next") }, "⏭ Jetzt spielen"),
+      el("button", { class: "play b", disabled: next ? null : "", "aria-label": loaded ? "Geladenen Titel jetzt spielen" : "Nächsten Titel jetzt spielen",
+        onclick: async () => {
+          if (loaded) { await act("/api/spotify/play_uri", { uri: loaded.uri }); setDeckB(null); }
+          else act("/api/spotify/next");
+        } }, "⏭ Jetzt spielen"),
+      loaded ? el("button", { "aria-label": "Deck B leeren", title: "Deck B leeren", onclick: () => setDeckB(null) }, "✕") : null,
     ),
-  );
+  ].filter(Boolean));
 
   // Mixer: one fader per speaker
   const channels = [];
@@ -408,7 +436,12 @@ function setupCrossfader() {
     if (reachedB) {
       status.textContent = "Überblende …";
       busyUntil = Date.now() + 8000;
-      try { await api("/api/spotify/crossfade", { seconds: 3 }); status.textContent = ""; }
+      const loaded = deckB;
+      try {
+        await api("/api/spotify/crossfade", { seconds: 3, ...(loaded ? { uri: loaded.uri } : {}) });
+        if (loaded) setDeckB(null);
+        status.textContent = "";
+      }
       catch (error) { status.textContent = error.message; }
     }
     slider.value = -100;

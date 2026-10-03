@@ -322,6 +322,8 @@ def spotify_crossfade(body: SpotifyBody | None = None):
     """DJ transition: fade the volume down, skip to the next track, fade back up."""
     body = body or SpotifyBody()
     seconds = body.seconds or 3
+    if body.uri and not body.uri.startswith("spotify:track:"):
+        raise HTTPException(400, "Auf Deck B kann nur ein einzelner Titel geladen werden.")
     if not _crossfade_lock.acquire(blocking=False):
         raise HTTPException(409, "Es läuft schon eine Überblendung.")
 
@@ -334,7 +336,10 @@ def spotify_crossfade(body: SpotifyBody | None = None):
         for i in range(steps, -1, -1):
             spotify.volume(round(start * i / steps), body.device_id)
             time.sleep(pause)
-        spotify.next()
+        if body.uri:
+            spotify.play(body.uri, "track", body.device_id)  # the track loaded on deck B
+        else:
+            spotify.next()
         time.sleep(min(0.5, pause))
         for i in range(steps + 1):
             spotify.volume(round(start * i / steps), body.device_id)

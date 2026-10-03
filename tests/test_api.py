@@ -167,3 +167,23 @@ def test_crossfade_rejects_parallel_run_and_bad_seconds(logged_in):
         assert logged_in.post("/api/spotify/crossfade").status_code == 409
     finally:
         main_module._crossfade_lock.release()
+
+def test_crossfade_plays_the_track_loaded_on_deck_b(logged_in, monkeypatch):
+    monkeypatch.setattr(main_module.time, "sleep", lambda seconds: None)
+    spotify.log.clear()
+    uri = "spotify:track:chill3"
+    assert logged_in.post("/api/spotify/crossfade", json={"seconds": 2, "uri": uri}).status_code == 200
+    kinds = [entry[0] for entry in spotify.log]
+    assert "next" not in kinds, "the loaded track is played instead of the queue's next one"
+    play = next(entry for entry in spotify.log if entry[0] == "play")
+    assert play == ("play", uri, "track", None)
+    skip = kinds.index("play")
+    down = [entry[1] for entry in spotify.log[:skip] if entry[0] == "volume"]
+    up = [entry[1] for entry in spotify.log[skip:] if entry[0] == "volume"]
+    assert down[-1] == 0 and up[0] == 0 and up[-1] == down[0]
+
+
+def test_deck_b_only_accepts_single_tracks(logged_in):
+    for uri in ("spotify:playlist:chill", "spotify:album:abc"):
+        assert logged_in.post("/api/spotify/crossfade", json={"uri": uri}).status_code == 400
+    assert logged_in.post("/api/spotify/crossfade", json={"uri": "https://evil.example"}).status_code == 422
