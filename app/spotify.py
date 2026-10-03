@@ -135,7 +135,14 @@ class Spotify:
             raise SpotifyError("Spotify bremst gerade. Versuch es gleich noch einmal.")
         if response.status_code >= 400:
             raise SpotifyError(f"Spotify meldet einen Fehler (HTTP {response.status_code}).")
-        return response.json() if response.content else None
+        if not response.content:
+            return None
+        try:
+            return response.json()
+        except ValueError:
+            # Some Spotify commands (e.g. "next") answer success with a plain-text or odd body: that is fine,
+            # there is nothing to read from it. It must not turn a working command into an error.
+            return None
 
     def now_playing(self) -> dict | None:
         data = self._api("GET", "/me/player")

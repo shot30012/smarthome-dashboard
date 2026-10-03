@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import mimetypes
 import os
 import re
@@ -281,6 +282,12 @@ def run(action):
         raise HTTPException(409, str(exc))
     except (HomeAssistantError, SpotifyError) as exc:
         raise HTTPException(502, str(exc))
+    except HTTPException:
+        raise
+    except Exception:
+        # Never answer with a bare 500: log the cause and tell the browser something readable.
+        logging.getLogger("dashboard").exception("Unerwarteter Fehler")
+        raise HTTPException(500, "Unerwarteter Fehler. Die Ursache steht im Server-Log.")
 
 
 @app.post("/api/entity/{entity_id}/{action}", dependencies=[Depends(require_login)])
@@ -360,7 +367,8 @@ def spotify_crossfade(body: SpotifyBody | None = None):
                 for i in range(steps + 1):
                     spotify.volume(round(start * i / steps), body.device_id)
                     time.sleep(pause)
-        except SpotifyError:
+        except Exception:
+            # Any failure (not only Spotify's) must leave the speaker at its original volume.
             restore()
             raise
 

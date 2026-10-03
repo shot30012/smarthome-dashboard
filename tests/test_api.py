@@ -235,3 +235,20 @@ def test_crossfade_fails_cleanly_when_even_restoring_fails(logged_in, monkeypatc
     assert "nicht erreichbar" in response.json()["detail"]
     assert main_module._crossfade_lock.acquire(blocking=False), "the lock is released after a failure"
     main_module._crossfade_lock.release()
+
+def test_unexpected_errors_get_a_readable_message_and_the_volume_is_restored(logged_in, monkeypatch):
+    monkeypatch.setattr(main_module.time, "sleep", lambda seconds: None)
+    start = spotify.now_playing()["volume"]
+    spotify.log.clear()
+
+    def explode():
+        raise ValueError("etwas Unvorhergesehenes")
+
+    monkeypatch.setattr(spotify, "next", explode)
+    response = logged_in.post("/api/spotify/crossfade", json={"seconds": 2})
+    assert response.status_code == 500
+    assert "Server-Log" in response.json()["detail"], "no bare 500 without an explanation"
+    volumes = [entry[1] for entry in spotify.log if entry[0] == "volume"]
+    assert volumes[-1] == start, "even a non-Spotify error leaves the speaker at its old volume"
+    assert main_module._crossfade_lock.acquire(blocking=False)
+    main_module._crossfade_lock.release()

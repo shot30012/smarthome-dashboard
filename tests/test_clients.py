@@ -220,3 +220,17 @@ def test_spotify_failures_are_logged_with_spotifys_reason_but_without_tokens(tmp
     log = caplog.text
     assert "403" in log and "Spotify-owned playlist" in log and "/playlists/abc/tracks" in log
     assert "SECRET-ACCESS" not in log and "SECRET-REFRESH" not in log
+
+@pytest.mark.parametrize("body", [b"OK", b"Accepted", b"<html>x</html>", b"\xff\xfe"])
+def test_spotify_commands_survive_a_success_answer_that_is_not_json(tmp_path, body):
+    """Regression: "next" answered with a non-JSON body, which crashed the DJ crossfade with a 500."""
+    def handler(request):
+        if request.url.host == "accounts.spotify.com":
+            return httpx.Response(200, json={"access_token": "A", "expires_in": 3600})
+        return httpx.Response(200, content=body)
+
+    client = spotify_with(handler, tmp_path)
+    client.next()  # must not raise
+    client.pause()
+    client.volume(30)
+    assert client.now_playing() is None  # nothing readable: treated as "nothing playing", not as a crash
