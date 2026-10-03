@@ -80,15 +80,19 @@ function chip(node, text, cls) {
   node.className = `chip ${cls}`;
 }
 
+// Resolves to true when the command worked, false when it failed (the banner already shows why).
 async function act(path, body) {
   busyUntil = Date.now() + 1500;
+  let ok = true;
   try {
     await api(path, body === undefined ? {} : body);
     banner("");
   } catch (error) {
+    ok = false;
     banner(error.message);
   }
   await refresh(true);
+  return ok;
 }
 
 async function refresh(force) {
@@ -184,23 +188,69 @@ function renderBots(bots) {
 }
 
 // ---- DJ-Pult (layout inspired by djay Pro: two decks, mixer with crossfader in the middle, library below)
+// Spotify plays ONE track at a time, so the two decks have roles: the LIVE deck shows what is playing, the other
+// deck is where the next track is prepared (drag a track onto it). The crossfader fades over to that track and the
+// decks swap roles, so "playing" always sits on the side the fader is on.
 const fmt = (ms) => { const s = Math.max(0, Math.round(ms / 1000)); return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`; };
-let libraryPlaylist = null; // { uri, name }
+let libraryPlaylist = null; // { uri, name, readable }
 let libraryRequest = 0;
 let waveSeed = "";
 let waveBars = [];
 let lastState = null;
-// Track the user loaded on deck B ("→ B" in the library): { uri, title, artist, image, duration_ms }.
-// Kept in sessionStorage so a reload does not empty the deck.
-let deckB = null;
-try { deckB = JSON.parse(sessionStorage.getItem("sh-deck-b") || "null"); } catch (error) { deckB = null; }
-function setDeckB(track) {
-  deckB = track;
-  try {
-    if (track) sessionStorage.setItem("sh-deck-b", JSON.stringify(track));
-    else sessionStorage.removeItem("sh-deck-b");
-  } catch (error) { /* storage unavailable: the deck just empties on reload */ }
+
+const store = {
+  get(key) { try { return sessionStorage.getItem(key); } catch (error) { return null; } },
+  set(key, value) {
+    try { if (value === null) sessionStorage.removeItem(key); else sessionStorage.setItem(key, value); }
+    catch (error) { /* storage unavailable: decks just reset on reload */ }
+  },
+};
+let liveDeck = store.get("sh-live-deck") === "b" ? "b" : "a";
+let idleTrack = null; // track prepared on the idle deck: { uri, title, artist, image, duration_ms }
+try { idleTrack = JSON.parse(store.get("sh-idle-track") || "null"); } catch (error) { idleTrack = null; }
+const otherDeck = (letter) => (letter === "a" ? "b" : "a");
+
+function saveDeckState() {
+  store.set("sh-live-deck", liveDeck);
+  store.set("sh-idle-track", idleTrack ? JSON.stringify(idleTrack) : null);
+}
+function setIdleTrack(track) {
+  idleTrack = track;
+  saveDeckState();
   if (lastState) renderDJ(lastState);
+}
+function setLiveDeck(letter) {
+  liveDeck = letter;
+  idleTrack = null; // the prepared track is playing now
+  saveDeckState();
+  if (lastState) renderDJ(lastState);
+}
+
+// Dropping on the idle deck prepares the track there; dropping on the live deck plays it right away.
+async function dropOnDeck(letter, track) {
+  if (letter === liveDeck) {
+    await act("/api/spotify/play_uri", track.context_uri ? { uri: track.uri, context_uri: track.context_uri } : { uri: track.uri });
+  } else {
+    setIdleTrack({ uri: track.uri, title: track.title, artist: track.artist, image: track.image || "", duration_ms: track.duration_ms });
+  }
+}
+
+function setupDeckDrop(node, letter) {
+  const accepts = (event) => [...(event.dataTransfer?.types ?? [])].includes("application/x-dj-track");
+  node.addEventListener("dragover", (event) => {
+    if (!accepts(event)) return;
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "copy";
+    node.classList.add("drop-ok");
+  });
+  node.addEventListener("dragleave", (event) => { if (!node.contains(event.relatedTarget)) node.classList.remove("drop-ok"); });
+  node.addEventListener("drop", (event) => {
+    event.preventDefault();
+    node.classList.remove("drop-ok");
+    let track = null;
+    try { track = JSON.parse(event.dataTransfer.getData("application/x-dj-track")); } catch (error) { return; }
+    if (track && track.uri) dropOnDeck(letter, track);
+  });
 }
 
 function fader(value, label, onChange) {
@@ -222,38 +272,61 @@ async function loadPlaylists() {
 }
 
 function renderPads() {
-  $("dj-pads").replaceChildren(...playlists.map((p, index) =>
+  // eight quick pads: readable (own) playlists come first; every playlist can be played as a whole
+  $("dj-pads").replaceChildren(...playlists.slice(0, 8).map((p, index) =>
     el("button", { class: `pad pad-${index % 4}`, title: p.name, onclick: () => act("/api/spotify/play_uri", { uri: p.uri }) }, p.name)));
 }
 
 function renderLibraryLists() {
-  const lists = $("lib-lists");
-  lists.replaceChildren(...playlists.map((p) => {
-    const button = el("button", { class: libraryPlaylist && libraryPlaylist.uri === p.uri ? "active" : "", onclick: () => openPlaylist(p) }, p.name);
-    return el("li", {}, button);
-  }));
-  if (!libraryPlaylist && playlists.length) openPlaylist(playlists[0]);
+  const readable = playlists.filter((p) => p.readable);
+  const foreign = playlists.filter((p) => !p.readable);
+  const item = (p) => el("li", {}, el("button", {
+    class: libraryPlaylist && libraryPlaylist.uri === p.uri ? "active" : "",
+    "data-uri": p.uri,
+    title: p.readable ? p.name : "Titel nicht abrufbar, nur als Ganzes spielbar",
+    onclick: () => openPlaylist(p),
+  }, `${p.readable ? "" : "🔒 "}${p.name}`));
+  $("lib-lists").replaceChildren(
+    ...readable.map(item),
+    ...(foreign.length ? [el("li", { class: "lib-sep" }, "Playlists anderer")] : []),
+    ...foreign.map(item),
+  );
+  if (!libraryPlaylist && (readable[0] || playlists[0])) openPlaylist(readable[0] || playlists[0]);
 }
 
 async function openPlaylist(playlist) {
   libraryPlaylist = playlist;
   const request = ++libraryRequest;
-  for (const button of $("lib-lists").querySelectorAll("button")) button.classList.toggle("active", button.textContent === playlist.name);
+  for (const button of $("lib-lists").querySelectorAll("button")) button.classList.toggle("active", button.dataset.uri === playlist.uri);
   const box = $("lib-tracks");
+  if (!playlist.readable) {
+    box.replaceChildren(
+      el("p", { class: "empty" }, "Spotify gibt die Titel von Playlists anderer Personen nicht für eigene Apps frei. Du kannst sie nur als Ganzes abspielen."),
+      el("button", { class: "cue wide", onclick: () => act("/api/spotify/play_uri", { uri: playlist.uri }) }, "▶ Ganze Playlist abspielen"),
+    );
+    return;
+  }
   box.replaceChildren(el("p", { class: "empty" }, "Lade Titel …"));
   try {
     const { tracks } = await api(`/api/spotify/playlists/${encodeURIComponent(playlist.uri.split(":")[2])}/tracks`);
     if (request !== libraryRequest) return;
-    box.replaceChildren(...(tracks.length ? tracks.map((t, index) =>
-      el("div", { class: "track-row" },
-        el("button", { class: "track", title: "Auf Deck A spielen", onclick: () => act("/api/spotify/play_uri", { uri: t.uri, context_uri: playlist.uri }) },
+    box.replaceChildren(...(tracks.length ? tracks.map((t, index) => {
+      const track = { uri: t.uri, title: t.title, artist: t.artist, image: t.image || "", duration_ms: t.duration_ms, context_uri: playlist.uri };
+      const row = el("div", { class: "track-row", draggable: "true", title: "Auf ein Deck ziehen" },
+        el("button", { class: "track", title: "Jetzt auf dem laufenden Deck spielen", onclick: () => dropOnDeck(liveDeck, track) },
           el("span", { class: "n" }, String(index + 1)),
           el("span", { class: "t" }, el("strong", {}, t.title), el("small", {}, t.artist)),
           el("span", { class: "d" }, fmt(t.duration_ms)),
         ),
-        el("button", { class: "load-b", title: "Auf Deck B laden", "aria-label": `${t.title} auf Deck B laden`,
-          onclick: () => setDeckB({ uri: t.uri, title: t.title, artist: t.artist, image: t.image || "", duration_ms: t.duration_ms }) }, "→ B"),
-      )) : [el("p", { class: "empty" }, "Keine Titel gefunden.")]));
+        el("button", { class: "load-deck a", title: "Auf Deck A", "aria-label": `${t.title} auf Deck A`, onclick: () => dropOnDeck("a", track) }, "→ A"),
+        el("button", { class: "load-deck b", title: "Auf Deck B", "aria-label": `${t.title} auf Deck B`, onclick: () => dropOnDeck("b", track) }, "→ B"),
+      );
+      row.addEventListener("dragstart", (event) => {
+        event.dataTransfer.setData("application/x-dj-track", JSON.stringify(track));
+        event.dataTransfer.effectAllowed = "copy";
+      });
+      return row;
+    }) : [el("p", { class: "empty" }, "Keine Titel gefunden.")]));
   } catch (error) {
     if (request === libraryRequest) box.replaceChildren(el("p", { class: "empty" }, error.message));
   }
@@ -275,7 +348,7 @@ function makeWave(seed) {
 }
 
 function drawWave(position) {
-  const canvas = $("wave-a");
+  const canvas = $("wave-live");
   if (!canvas) return;
   const ratio = window.devicePixelRatio || 1;
   const width = canvas.clientWidth, height = canvas.clientHeight;
@@ -286,9 +359,10 @@ function drawWave(position) {
   const duration = lastNow && lastNow.duration_ms ? lastNow.duration_ms : 1;
   const played = Math.min(1, position / duration);
   const step = width / waveBars.length;
+  const color = liveDeck === "a" ? "#19d3ff" : "#ff4fb8";
   waveBars.forEach((value, i) => {
     const barHeight = value * height;
-    g.fillStyle = i / waveBars.length <= played ? "#19d3ff" : "#3a4678";
+    g.fillStyle = i / waveBars.length <= played ? color : "#3a4678";
     g.fillRect(i * step + 1, (height - barHeight) / 2, Math.max(1, step - 2), barHeight);
   });
   g.fillStyle = "#fff";
@@ -301,13 +375,13 @@ function currentPosition() {
 }
 
 function setupJog(jog) {
-  let center = null, startAngle = 0, turned = 0, last = 0, base = 0;
+  let center = null, last = 0, turned = 0, base = 0;
   const angleOf = (event) => Math.atan2(event.clientY - center.y, event.clientX - center.x);
   jog.addEventListener("pointerdown", (event) => {
     if (!lastNow) return;
     const rect = jog.getBoundingClientRect();
     center = { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
-    startAngle = last = angleOf(event);
+    last = angleOf(event);
     turned = 0;
     base = currentPosition();
     dragging = true;
@@ -339,6 +413,56 @@ function setupJog(jog) {
   jog.addEventListener("pointercancel", finish);
 }
 
+const deckTag = (letter, extra) => el("div", { class: "deck-head" },
+  el("span", { class: "tag" }, `DECK ${letter.toUpperCase()}`), extra);
+
+function renderLiveDeck(letter, now) {
+  const jog = el("div", { class: `jog${now && now.playing ? " spin" : ""}`, role: "img", "aria-label": "Plattenteller: ziehen zum Vor- und Zurückspulen" },
+    now && now.image ? el("img", { src: now.image, alt: "" }) : el("div", { class: "label" }, letter.toUpperCase()));
+  setupJog(jog);
+  const wave = el("canvas", { id: "wave-live", class: "wave", role: "slider", "aria-label": "Position im Titel" });
+  wave.addEventListener("click", (event) => {
+    if (!now || !now.duration_ms) return;
+    const rect = wave.getBoundingClientRect();
+    act("/api/spotify/seek", { position_ms: Math.round(((event.clientX - rect.left) / rect.width) * now.duration_ms) });
+  });
+  return [
+    deckTag(letter, el("span", { class: "dev" }, el("span", { class: "live-badge" }, "LIVE"), now && now.device ? ` ${now.device}` : " kein Gerät")),
+    el("div", { class: "deck-main" }, jog, el("div", { class: "meta" }, el("strong", {}, now ? now.title : "Nichts läuft"), el("span", {}, now ? now.artist : "Titel hierher ziehen oder Playlist wählen"))),
+    wave,
+    el("div", { class: "times" }, el("span", { id: "dj-pos" }, fmt(currentPosition())), el("span", { id: "dj-rem" }, `-${fmt(now ? now.duration_ms - currentPosition() : 0)}`)),
+    el("div", { class: "transport" },
+      el("button", { "aria-label": "Zum Anfang", title: "Zum Anfang", onclick: () => act("/api/spotify/seek", { position_ms: 0 }) }, "⟲"),
+      el("button", { class: "play", "aria-label": now && now.playing ? "Pause" : "Wiedergabe", onclick: () => act(`/api/spotify/${now && now.playing ? "pause" : "play"}`) }, now && now.playing ? "⏸" : "▶"),
+      el("button", { "aria-label": "Vorheriger Titel", onclick: () => act("/api/spotify/previous") }, "⏮"),
+    ),
+  ];
+}
+
+function renderIdleDeck(letter, queue) {
+  const loaded = idleTrack;
+  const next = loaded || queue[0];
+  return [
+    deckTag(letter, el("span", { class: "dev" }, loaded ? "geladen" : "nächster Titel")),
+    el("div", { class: "deck-main" },
+      el("div", { class: "jog idle" }, next && next.image ? el("img", { src: next.image, alt: "" }) : el("div", { class: "label" }, letter.toUpperCase())),
+      el("div", { class: "meta" },
+        el("strong", {}, next ? next.title : `Deck ${letter.toUpperCase()} ist leer`),
+        el("span", {}, next ? `${next.artist}${loaded && loaded.duration_ms ? " · " + fmt(loaded.duration_ms) : ""}` : "Titel aus der Bibliothek hierher ziehen"),
+      ),
+    ),
+    loaded ? null : el("ol", { class: "queue" }, ...queue.slice(1, 4).map((q) => el("li", {}, el("span", {}, q.title), el("small", {}, q.artist)))),
+    el("div", { class: "transport" },
+      el("button", { class: "play", disabled: next ? null : "", "aria-label": loaded ? "Geladenen Titel jetzt spielen" : "Nächsten Titel jetzt spielen",
+        onclick: async () => {
+          const ok = loaded ? await act("/api/spotify/play_uri", { uri: loaded.uri }) : await act("/api/spotify/next");
+          if (ok) setLiveDeck(otherDeck(liveDeck)); // that deck is playing now
+        } }, "⏭ Jetzt spielen"),
+      loaded ? el("button", { "aria-label": `Deck ${letter.toUpperCase()} leeren`, title: "Deck leeren", onclick: () => setIdleTrack(null) }, "✕") : null,
+    ),
+  ].filter(Boolean);
+}
+
 function renderDJ(state) {
   lastState = state;
   const sp = state.spotify;
@@ -351,53 +475,12 @@ function renderDJ(state) {
   const seed = now ? `${now.title}|${now.artist}` : "";
   if (seed !== waveSeed) { waveSeed = seed; waveBars = makeWave(seed || "leer"); }
 
-  // Deck A: what is playing
-  const jog = el("div", { class: `jog${now && now.playing ? " spin" : ""}`, role: "img", "aria-label": "Plattenteller: ziehen zum Vor- und Zurückspulen" },
-    now && now.image ? el("img", { src: now.image, alt: "" }) : el("div", { class: "label" }, "A"));
-  setupJog(jog);
-  const wave = el("canvas", { id: "wave-a", class: "wave", role: "slider", "aria-label": "Position im Titel" });
-  wave.addEventListener("click", (event) => {
-    if (!now || !now.duration_ms) return;
-    const rect = wave.getBoundingClientRect();
-    act("/api/spotify/seek", { position_ms: Math.round(((event.clientX - rect.left) / rect.width) * now.duration_ms) });
-  });
-  $("deck-a").replaceChildren(
-    el("div", { class: "deck-head" }, el("span", { class: "tag" }, "DECK A"), el("span", { class: "dev" }, now && now.device ? now.device : "kein Gerät")),
-    el("div", { class: "deck-main" }, jog, el("div", { class: "meta" }, el("strong", {}, now ? now.title : "Nichts läuft"), el("span", {}, now ? now.artist : "Wähle unten eine Playlist"))),
-    wave,
-    el("div", { class: "times" }, el("span", { id: "dj-pos" }, fmt(currentPosition())), el("span", { id: "dj-rem" }, `-${fmt(now ? now.duration_ms - currentPosition() : 0)}`)),
-    el("div", { class: "transport" },
-      el("button", { "aria-label": "Zum Anfang", title: "Zum Anfang", onclick: () => act("/api/spotify/seek", { position_ms: 0 }) }, "⟲"),
-      el("button", { class: "play", "aria-label": now && now.playing ? "Pause" : "Wiedergabe", onclick: () => act(`/api/spotify/${now && now.playing ? "pause" : "play"}`) }, now && now.playing ? "⏸" : "▶"),
-      el("button", { "aria-label": "Vorheriger Titel", onclick: () => act("/api/spotify/previous") }, "⏮"),
-    ),
-  );
+  for (const letter of ["a", "b"]) {
+    const deck = $(`deck-${letter}`);
+    deck.classList.toggle("live", letter === liveDeck);
+    deck.replaceChildren(...(letter === liveDeck ? renderLiveDeck(letter, now) : renderIdleDeck(letter, sp.queue || [])));
+  }
   drawWave(currentPosition());
-
-  // Deck B: the track loaded with "→ B", otherwise simply the next track in Spotify's queue
-  const queue = sp.queue || [];
-  const loaded = deckB;
-  const next = loaded || queue[0];
-  // replaceChildren() would print a literal "null" for empty slots, so drop them first.
-  $("deck-b").replaceChildren(...[
-    el("div", { class: "deck-head" }, el("span", { class: "tag b" }, "DECK B"), el("span", { class: "dev" }, loaded ? "geladen" : "nächster Titel")),
-    el("div", { class: "deck-main" },
-      el("div", { class: "jog idle" }, next && next.image ? el("img", { src: next.image, alt: "" }) : el("div", { class: "label" }, "B")),
-      el("div", { class: "meta" },
-        el("strong", {}, next ? next.title : "Deck B ist leer"),
-        el("span", {}, next ? `${next.artist}${loaded && loaded.duration_ms ? " · " + fmt(loaded.duration_ms) : ""}` : "In der Bibliothek „→ B“ antippen"),
-      ),
-    ),
-    loaded ? null : el("ol", { class: "queue" }, ...queue.slice(1, 4).map((q) => el("li", {}, el("span", {}, q.title), el("small", {}, q.artist)))),
-    el("div", { class: "transport" },
-      el("button", { class: "play b", disabled: next ? null : "", "aria-label": loaded ? "Geladenen Titel jetzt spielen" : "Nächsten Titel jetzt spielen",
-        onclick: async () => {
-          if (loaded) { await act("/api/spotify/play_uri", { uri: loaded.uri }); setDeckB(null); }
-          else act("/api/spotify/next");
-        } }, "⏭ Jetzt spielen"),
-      loaded ? el("button", { "aria-label": "Deck B leeren", title: "Deck B leeren", onclick: () => setDeckB(null) }, "✕") : null,
-    ),
-  ].filter(Boolean));
 
   // Mixer: one fader per speaker
   const channels = [];
@@ -424,33 +507,43 @@ function renderDJ(state) {
   }
   $("dj-mixer").replaceChildren(...(channels.length ? channels : [el("p", { class: "empty" }, "Keine Geräte gefunden.")]));
   renderPads();
+  syncCrossfader();
 }
 
-// Crossfader: drag to B and release = fade out, skip to the next track, fade back in.
+// The fader sits on the side of the live deck. Drag it to the other side and let go: fade out, change to the track
+// prepared on the idle deck (or the next one in the queue), fade in, and the decks swap roles.
+function syncCrossfader() {
+  const slider = $("xfade");
+  slider.value = liveDeck === "a" ? -100 : 100;
+  slider.setAttribute("aria-label", `Crossfader: steht bei Deck ${liveDeck.toUpperCase()}. Zur anderen Seite ziehen und loslassen, um überzublenden`);
+  const [left, right] = slider.parentElement.querySelectorAll("span");
+  left.classList.toggle("live-side", liveDeck === "a");
+  right.classList.toggle("live-side", liveDeck === "b");
+}
+
 function setupCrossfader() {
   const slider = $("xfade");
   const status = $("xfade-status");
   slider.addEventListener("change", async () => {
-    const reachedB = Number(slider.value) >= 90;
+    const target = otherDeck(liveDeck);
+    const reached = target === "b" ? Number(slider.value) >= 90 : Number(slider.value) <= -90;
+    if (!reached) { syncCrossfader(); return; }
     slider.disabled = true;
-    if (reachedB) {
-      status.textContent = "Überblende …";
-      busyUntil = Date.now() + 8000;
-      const loaded = deckB;
-      const volumeBefore = lastNow && lastNow.volume != null ? lastNow.volume : null;
-      try {
-        await api("/api/spotify/crossfade", { seconds: 3, ...(loaded ? { uri: loaded.uri } : {}) });
-        if (loaded) setDeckB(null);
-        status.textContent = "";
-      }
-      catch (error) {
-        status.textContent = error.message;
-        // If the fade was interrupted the speaker may still be turned down: put the volume back.
-        if (volumeBefore !== null) await api("/api/spotify/volume", { level: volumeBefore }).catch(() => undefined);
-      }
+    status.textContent = "Überblende …";
+    busyUntil = Date.now() + 8000;
+    const loaded = idleTrack;
+    const volumeBefore = lastNow && lastNow.volume != null ? lastNow.volume : null;
+    try {
+      await api("/api/spotify/crossfade", { seconds: 3, ...(loaded ? { uri: loaded.uri } : {}) });
+      setLiveDeck(target);
+      status.textContent = "";
+    } catch (error) {
+      status.textContent = error.message;
+      // If the fade was interrupted the speaker may still be turned down: put the volume back.
+      if (volumeBefore !== null) await api("/api/spotify/volume", { level: volumeBefore }).catch(() => undefined);
     }
-    slider.value = -100;
     slider.disabled = false;
+    syncCrossfader();
     refresh(true);
   });
 }
@@ -474,6 +567,8 @@ document.addEventListener("keydown", (event) => {
   else if (event.code === "ArrowRight" && !event.target.matches?.("input")) act("/api/spotify/next");
   else if (event.code === "ArrowLeft" && !event.target.matches?.("input")) act("/api/spotify/previous");
 });
+setupDeckDrop($("deck-a"), "a");
+setupDeckDrop($("deck-b"), "b");
 
 // ---- chat
 function addMessage(text, who) {

@@ -110,3 +110,25 @@ select{width:100%;min-height:44px;margin-top:10px;padding:0 10px;border-radius:1
 .track-row .track{flex:1;min-width:0}
 .load-b{flex:none;min-width:52px;min-height:48px;padding:0 10px;border-radius:10px;border:1px solid #6b2a56;background:#4a1a3e;color:#ff9ad6;font-weight:700;font-size:.85rem}
 .load-b:hover{background:#6b2a56;color:#fff}
+/* decks swap roles: colour comes from the deck letter, "live" marks the one that is playing */
+.deck-a{--deck:#19d3ff}
+.deck-b{--deck:#ff4fb8}
+.deck-a .tag{background:#0a3c4d;color:#19d3ff}
+.deck-b .tag{background:#4a1a3e;color:#ff4fb8}
+.deck-a .jog{border-color:#19d3ff;box-shadow:0 0 18px #19d3ff55}
+.deck-b .jog{border-color:#ff4fb8;box-shadow:0 0 18px #ff4fb855}
+.deck-a .transport .play{background:#0d6f8a;border-color:#19d3ff}
+.deck-b .transport .play{background:#8a1a63;border-color:#ff4fb8;font-size:.95rem}
+.deck .jog.idle{cursor:default;opacity:.85}
+.deck.live{border-color:var(--deck);box-shadow:0 0 0 1px var(--deck) inset}
+.live-badge{display:inline-block;padding:1px 7px;border-radius:5px;background:#3fd0b0;color:#06281f;font-weight:800;font-size:.7rem;letter-spacing:.08em}
+.deck.drop-ok{outline:2px dashed var(--deck);outline-offset:-5px;background:#16204a}
+.xfade span.live-side{filter:brightness(1.5);text-decoration:underline}
+.lib-sep{padding:10px 10px 4px;color:#9aa4d6;font-size:.72rem;text-transform:uppercase;letter-spacing:.08em}
+.track-row[draggable=true]{cursor:grab}
+.track-row[draggable=true]:active{cursor:grabbing}
+.load-deck{flex:none;min-width:48px;min-height:48px;padding:0 8px;border-radius:10px;font-weight:700;font-size:.8rem}
+.load-deck.a{border:1px solid #0d6f8a;background:#0a3c4d;color:#7fe6ff}
+.load-deck.b{border:1px solid #6b2a56;background:#4a1a3e;color:#ff9ad6}
+.load-deck:hover{filter:brightness(1.3)}
+.cue.wide{width:100%;margin-top:8px}

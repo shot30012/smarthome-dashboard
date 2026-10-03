@@ -153,14 +153,16 @@ def test_spotify_playlists_seek_and_progress(tmp_path):
         if request.url.host == "accounts.spotify.com":
             return httpx.Response(200, json={"access_token": "A", "expires_in": 3600})
         calls.append((request.method, request.url.path, dict(request.url.params)))
+        if request.url.path == "/v1/me":
+            return httpx.Response(200, json={"id": "me"})
         if request.url.path == "/v1/me/playlists":
-            return httpx.Response(200, json={"items": [{"uri": "spotify:playlist:1", "name": "Chill", "images": [{"url": "http://i"}]}, None]})
+            return httpx.Response(200, json={"items": [{"uri": "spotify:playlist:1", "name": "Chill", "owner": {"id": "me"}, "images": [{"url": "http://i"}]}, None]})
         if request.url.path == "/v1/me/player":
             return httpx.Response(200, json={"is_playing": True, "progress_ms": 5000, "device": {"name": "Echo"}, "item": {"name": "S", "duration_ms": 200000, "artists": [], "album": {}}})
         return httpx.Response(204)
 
     client = spotify_with(handler, tmp_path)
-    assert client.playlists() == [{"uri": "spotify:playlist:1", "name": "Chill", "image": "http://i"}]
+    assert client.playlists() == [{"uri": "spotify:playlist:1", "name": "Chill", "image": "http://i", "readable": True}]
     client.seek(-3)
     assert ("PUT", "/v1/me/player/seek", {"position_ms": "0"}) in calls
     now = client.now_playing()
@@ -172,18 +174,19 @@ def test_spotify_queue_and_playlist_tracks(tmp_path):
             return httpx.Response(200, json={"access_token": "A", "expires_in": 3600})
         if request.url.path == "/v1/me/player/queue":
             return httpx.Response(200, json={"queue": [{"uri": "spotify:track:q", "name": "Next", "duration_ms": 1000, "artists": [{"name": "B"}], "album": {}}]})
-        if request.url.path == "/v1/playlists/abc/tracks":
+        if request.url.path == "/v1/playlists/abc/items":
             return httpx.Response(200, json={"items": [
-                {"track": {"uri": "spotify:track:1", "name": "One", "duration_ms": 5, "artists": [{"name": "A"}], "album": {}}},
-                {"track": {"uri": "spotify:episode:9", "name": "Podcast", "artists": []}},
-                {"track": None},
+                {"item": {"uri": "spotify:track:1", "name": "One", "duration_ms": 5, "artists": [{"name": "A"}], "album": {}}},
+                {"item": {"uri": "spotify:episode:9", "name": "Podcast", "artists": []}},
+                {"item": None},
+                {"track": {"uri": "spotify:track:2", "name": "Legacy", "duration_ms": 6, "artists": [], "album": {}}},
             ]})
         return httpx.Response(204)
 
     client = spotify_with(handler, tmp_path)
     assert client.queue()[0]["title"] == "Next"
     tracks = client.playlist_tracks("abc")
-    assert [t["title"] for t in tracks] == ["One"]  # episodes and removed tracks are skipped
+    assert [t["title"] for t in tracks] == ["One", "Legacy"]  # episodes and removed tracks are skipped
 
 
 def test_spotify_play_in_context_body(tmp_path):
@@ -218,7 +221,7 @@ def test_spotify_failures_are_logged_with_spotifys_reason_but_without_tokens(tmp
     with caplog.at_level("WARNING", logger="dashboard.spotify"), pytest.raises(SpotifyError):
         spotify_with(handler, tmp_path, refresh="SECRET-REFRESH").playlist_tracks("abc")
     log = caplog.text
-    assert "403" in log and "Spotify-owned playlist" in log and "/playlists/abc/tracks" in log
+    assert "403" in log and "Spotify-owned playlist" in log and "/playlists/abc/items" in log
     assert "SECRET-ACCESS" not in log and "SECRET-REFRESH" not in log
 
 @pytest.mark.parametrize("body", [b"OK", b"Accepted", b"<html>x</html>", b"\xff\xfe"])
@@ -234,3 +237,39 @@ def test_spotify_commands_survive_a_success_answer_that_is_not_json(tmp_path, bo
     client.pause()
     client.volume(30)
     assert client.now_playing() is None  # nothing readable: treated as "nothing playing", not as a crash
+
+def test_spotify_playlists_mark_which_ones_the_app_may_read(tmp_path):
+    """Spotify only exposes the tracks of playlists the user owns or collaborates on."""
+    calls = []
+
+    def handler(request):
+        if request.url.host == "accounts.spotify.com":
+            return httpx.Response(200, json={"access_token": "A", "expires_in": 3600})
+        calls.append(request.url.path)
+        if request.url.path == "/v1/me":
+            return httpx.Response(200, json={"id": "me123"})
+        return httpx.Response(200, json={"items": [
+            {"uri": "spotify:playlist:fremd", "name": "Fremd", "owner": {"id": "someone"}, "collaborative": False, "images": []},
+            {"uri": "spotify:playlist:meine", "name": "Meine", "owner": {"id": "me123"}, "collaborative": False, "images": []},
+            {"uri": "spotify:playlist:gemeinsam", "name": "Gemeinsam", "owner": {"id": "other"}, "collaborative": True, "images": []},
+            None,
+        ]})
+
+    client = spotify_with(handler, tmp_path)
+    playlists = client.playlists()
+    assert [(p["name"], p["readable"]) for p in playlists] == [("Meine", True), ("Gemeinsam", True), ("Fremd", False)]
+    client.playlists()
+    assert calls.count("/v1/me") == 1, "the account id is looked up only once"
+
+
+def test_spotify_playlist_tracks_use_the_items_endpoint_not_the_removed_tracks_one(tmp_path):
+    seen = []
+
+    def handler(request):
+        if request.url.host == "accounts.spotify.com":
+            return httpx.Response(200, json={"access_token": "A", "expires_in": 3600})
+        seen.append(request.url.path)
+        return httpx.Response(200, json={"items": []})
+
+    spotify_with(handler, tmp_path).playlist_tracks("xyz")
+    assert seen == ["/v1/playlists/xyz/items"]

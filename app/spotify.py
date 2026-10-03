@@ -51,6 +51,7 @@ class Spotify:
         self.token_file = Path(data_dir) / "spotify_token.json"
         self.client = client or httpx.Client(timeout=10.0)
         self._access: tuple[str, float] | None = None
+        self._me: str | None = None
 
     # ---- OAuth
     @property
@@ -159,14 +160,25 @@ class Spotify:
         data = self._api("GET", "/me/player/devices") or {}
         return [{"id": d["id"], "name": d["name"], "active": d.get("is_active", False), "volume": d.get("volume_percent")} for d in data.get("devices", [])]
 
+    def _me_id(self) -> str:
+        if self._me is None:
+            self._me = (self._api("GET", "/me") or {}).get("id") or ""
+        return self._me
+
     def playlists(self) -> list[dict]:
-        data = self._api("GET", "/me/playlists", params={"limit": 12}) or {}
+        """Up to 50 playlists, readable ones first. Spotify only lets an app read the TRACKS of playlists the user
+        owns or collaborates on; all of them can still be played as a whole, which is why foreign ones are kept."""
+        data = self._api("GET", "/me/playlists", params={"limit": 50}) or {}
+        me = self._me_id()
         result = []
         for item in data.get("items") or []:
             if not item:
                 continue
             images = item.get("images") or []
-            result.append({"uri": item["uri"], "name": item.get("name", ""), "image": images[-1]["url"] if images else ""})
+            owner = (item.get("owner") or {}).get("id")
+            readable = bool(me) and (owner == me or bool(item.get("collaborative")))
+            result.append({"uri": item["uri"], "name": item.get("name", ""), "image": images[-1]["url"] if images else "", "readable": readable})
+        result.sort(key=lambda p: not p["readable"])  # stable: keeps Spotify's order inside each group
         return result
 
     def seek(self, position_ms: int) -> None:
@@ -181,10 +193,12 @@ class Spotify:
         return result
 
     def playlist_tracks(self, playlist_id: str) -> list[dict]:
-        data = self._api("GET", f"/playlists/{playlist_id}/tracks", params={"limit": 50, "fields": "items(track(uri,name,duration_ms,artists(name),album(images)))"}) or {}
+        # Spotify replaced /playlists/{id}/tracks by /playlists/{id}/items (the old path now answers 403 for apps in
+        # development mode), and each entry's song moved from "track" to "item".
+        data = self._api("GET", f"/playlists/{playlist_id}/items", params={"limit": 50}) or {}
         result = []
         for entry in data.get("items") or []:
-            item = (entry or {}).get("track")
+            item = (entry or {}).get("item") or (entry or {}).get("track")
             if not item or not item.get("uri", "").startswith("spotify:track:"):
                 continue
             summary = track_summary(item) or {}
@@ -310,7 +324,10 @@ class FakeSpotify:
         self.play(track_uri, "track", device_id)
 
     def playlists(self):
-        return [{"uri": f"spotify:playlist:{key}", "name": name, "image": ""} for key, name in (("chill", "Chill Vibes"), ("party", "Party Hits"), ("focus", "Deep Focus"), ("rock", "Rock Klassiker"))]
+        return [
+            {"uri": f"spotify:playlist:{key}", "name": name, "image": "", "readable": readable}
+            for key, name, readable in (("chill", "Chill Vibes", True), ("party", "Party Hits", True), ("focus", "Deep Focus", True), ("rock", "Rock Klassiker", True), ("mix", "Spotify Daily Mix", False))
+        ]
 
     def seek(self, position_ms):
         self.log.append(("seek", position_ms))
