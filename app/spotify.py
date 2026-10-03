@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import time
 import urllib.parse
@@ -15,12 +16,25 @@ API = "https://api.spotify.com/v1"
 SCOPES = "user-read-playback-state user-modify-playback-state user-read-currently-playing playlist-read-private"
 
 
+LOGGER = logging.getLogger("dashboard.spotify")
+
+
 class SpotifyError(RuntimeError):
     pass
 
 
 class NotConnected(SpotifyError):
     pass
+
+
+def _error_text(response: httpx.Response) -> str:
+    try:
+        error = response.json().get("error")
+        if isinstance(error, dict):
+            return str(error.get("message", ""))[:200]
+        return str(error or "")[:200]
+    except ValueError:
+        return ""
 
 
 def track_summary(item: dict | None) -> dict | None:
@@ -102,12 +116,20 @@ class Spotify:
             raise SpotifyError("Spotify ist nicht erreichbar.") from exc
         if response.status_code == 204 or (response.status_code == 202):
             return None
+        if response.status_code >= 400:
+            # Spotify's own explanation goes to the server log (never the tokens), so a failure can be understood later.
+            LOGGER.warning("Spotify %s %s -> %s %s", method, path, response.status_code, _error_text(response))
+        is_playlist = path.startswith("/playlists/")
         if response.status_code == 401:
             self._access = None
             raise SpotifyError("Spotify-Sitzung abgelaufen. Bitte neu verbinden.")
         if response.status_code == 403:
+            if is_playlist:
+                raise SpotifyError("Spotify gibt die Titel dieser Playlist nicht frei (gilt zum Beispiel für von Spotify erstellte Playlists und Playlists anderer Personen). Wähle eine eigene Playlist.")
             raise SpotifyError("Spotify erlaubt das nicht. Für die Steuerung ist Spotify Premium nötig.")
         if response.status_code == 404:
+            if is_playlist:
+                raise SpotifyError("Diese Playlist wurde nicht gefunden.")
             raise SpotifyError("Kein aktives Spotify-Gerät. Öffne Spotify auf einem Gerät oder wähle ein Gerät aus.")
         if response.status_code == 429:
             raise SpotifyError("Spotify bremst gerade. Versuch es gleich noch einmal.")

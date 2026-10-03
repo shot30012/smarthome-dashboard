@@ -197,3 +197,26 @@ def test_spotify_play_in_context_body(tmp_path):
 
     spotify_with(handler, tmp_path).play_in_context("spotify:playlist:p", "spotify:track:t")
     assert bodies == [{"context_uri": "spotify:playlist:p", "offset": {"uri": "spotify:track:t"}}]
+
+@pytest.mark.parametrize("status, text", [(403, "nicht frei"), (404, "nicht gefunden")])
+def test_spotify_playlist_errors_are_not_mistaken_for_premium_or_device_problems(tmp_path, status, text):
+    def handler(request):
+        if request.url.host == "accounts.spotify.com":
+            return httpx.Response(200, json={"access_token": "A", "expires_in": 3600})
+        return httpx.Response(status, json={"error": {"status": status, "message": "Forbidden"}})
+
+    with pytest.raises(SpotifyError, match=text):
+        spotify_with(handler, tmp_path).playlist_tracks("abc")
+
+
+def test_spotify_failures_are_logged_with_spotifys_reason_but_without_tokens(tmp_path, caplog):
+    def handler(request):
+        if request.url.host == "accounts.spotify.com":
+            return httpx.Response(200, json={"access_token": "SECRET-ACCESS", "expires_in": 3600})
+        return httpx.Response(403, json={"error": {"status": 403, "message": "Spotify-owned playlist"}})
+
+    with caplog.at_level("WARNING", logger="dashboard.spotify"), pytest.raises(SpotifyError):
+        spotify_with(handler, tmp_path, refresh="SECRET-REFRESH").playlist_tracks("abc")
+    log = caplog.text
+    assert "403" in log and "Spotify-owned playlist" in log and "/playlists/abc/tracks" in log
+    assert "SECRET-ACCESS" not in log and "SECRET-REFRESH" not in log
