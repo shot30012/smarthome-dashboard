@@ -18,6 +18,24 @@
     </form>
   </main>
 
+  <main id="change" class="login" hidden>
+    <form id="change-form" class="card">
+      <h1>Neues Passwort</h1>
+      <p>Du hast dich mit dem Einmalpasswort angemeldet. Wähle jetzt dein eigenes (mindestens 12 Zeichen).</p>
+      <label>Einmalpasswort
+        <input id="pw-old" type="password" autocomplete="current-password" required>
+      </label>
+      <label>Neues Passwort
+        <input id="pw-new" type="password" autocomplete="new-password" minlength="12" required>
+      </label>
+      <label>Neues Passwort wiederholen
+        <input id="pw-new2" type="password" autocomplete="new-password" minlength="12" required>
+      </label>
+      <p id="change-error" class="error" role="alert"></p>
+      <button class="primary" type="submit">Passwort ändern</button>
+    </form>
+  </main>
+
   <div id="app" hidden>
     <header class="top">
       <h1>Smarthome</h1>

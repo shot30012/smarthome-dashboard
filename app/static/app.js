@@ -33,6 +33,12 @@ async function api(path, body) {
     showLogin();
     throw new Error("Bitte melde dich an.");
   }
+  if (response.status === 403 && response.headers.get("x-must-change-password")) {
+    showChange();
+    const error = new Error("Bitte ändere zuerst dein Einmalpasswort.");
+    error.mustChange = true;
+    throw error;
+  }
   const data = await response.json().catch(() => ({}));
   if (!response.ok) throw new Error(data.detail || "Das hat nicht geklappt.");
   return data;
@@ -41,12 +47,23 @@ async function api(path, body) {
 function showLogin() {
   clearInterval(pollTimer);
   $("app").hidden = true;
+  $("change").hidden = true;
   $("login").hidden = false;
   $("password").focus();
 }
 
+// After the first login with the one-time password only this screen is usable.
+function showChange() {
+  clearInterval(pollTimer);
+  $("app").hidden = true;
+  $("login").hidden = true;
+  $("change").hidden = false;
+  $("pw-old").focus();
+}
+
 function showApp() {
   $("login").hidden = true;
+  $("change").hidden = true;
   $("app").hidden = false;
   refresh();
   clearInterval(pollTimer);
@@ -488,8 +505,23 @@ $("login-form").addEventListener("submit", async (event) => {
     $("login-error").textContent = error.message;
   }
 });
+$("change-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  $("change-error").textContent = "";
+  if ($("pw-new").value !== $("pw-new2").value) {
+    $("change-error").textContent = "Die beiden neuen Passwörter sind nicht gleich.";
+    return;
+  }
+  try {
+    await api("/api/change-password", { current_password: $("pw-old").value, new_password: $("pw-new").value });
+    for (const id of ["pw-old", "pw-new", "pw-new2"]) $(id).value = "";
+    showApp();
+  } catch (error) {
+    $("change-error").textContent = error.message;
+  }
+});
 $("logout").addEventListener("click", async () => { await api("/api/logout", {}).catch(() => undefined); showLogin(); });
 
 setupChat();
 setupCrossfader();
-api("/api/state").then(showApp).catch(showLogin);
+api("/api/state").then(showApp).catch((error) => { if (!error.mustChange) showLogin(); });

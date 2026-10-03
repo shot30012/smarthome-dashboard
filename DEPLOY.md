@@ -54,6 +54,20 @@ und meldet das im Log (`docker compose logs caddy`).
     SPOTIFY_REDIRECT_URI=https://dashboarddy.duckdns.org:57443/spotify/callback
     CHATBOTS=Dayline-Assistent|https://dayline.duckdns.org/health
 
+## Einmalpasswort
+
+Das Passwort aus der `.env` (`DASHBOARD_PASSWORD_HASH`) ist ein **Einmalpasswort**. Beim ersten Login zeigt das
+Dashboard nur den Bildschirm „Neues Passwort“ (mindestens 12 Zeichen); alles andere ist gesperrt, bis ein eigenes
+Passwort gesetzt ist. Das neue Passwort wird als Hash in `data/password.json` im Volume `dashboard_data` gespeichert
+und gilt ab dann statt des Passworts aus der `.env`. Mit der Änderung enden alle anderen Sitzungen.
+
+- **Passwort vergessen:** `data/password.json` löschen
+  (`docker compose exec app rm /srv/dashboard/data/password.json`). Dann gilt wieder das Einmalpasswort aus der
+  `.env`, und beim nächsten Login muss ein neues gewählt werden.
+- **Einmalpasswort neu setzen:** Neuen Hash mit `docker compose run --rm app python -m app.hashpw` erzeugen, in die
+  `.env` eintragen und `data/password.json` löschen.
+- Im Demo-Modus (`DEMO=true`) gibt es das nicht.
+
 ## Prüfen
 
 1. `curl -sI https://dashboarddy.duckdns.org:57443/health` antwortet mit `200`.

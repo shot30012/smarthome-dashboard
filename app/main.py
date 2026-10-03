@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 import mimetypes
+import os
 import re
 import secrets
 import threading
@@ -43,9 +45,48 @@ _attempts: dict[str, list[float]] = {}
 _lock = threading.Lock()
 
 
+# The password from the .env is a ONE-TIME password: after the first login the owner must choose a
+# new one. The new hash is stored in data/password.json (it takes precedence over the .env) together
+# with a version number that is part of every session token, so a change ends all other sessions.
+# Deleting data/password.json brings the .env password back (and forces another change).
+ALLOWED_WHILE_PASSWORD_CHANGE_REQUIRED = {"/api/session", "/api/change-password", "/api/logout"}
+
+
+def password_file() -> Path:
+    return Path(settings.data_dir) / "password.json"
+
+
+def password_state() -> tuple[str, int]:
+    """(hash, version): version 0 is the one-time password from the .env, higher numbers were set in the app."""
+    try:
+        data = json.loads(password_file().read_text("utf-8"))
+        if isinstance(data.get("hash"), str) and isinstance(data.get("version"), int) and data["version"] > 0:
+            return data["hash"], data["version"]
+    except (OSError, ValueError, AttributeError):
+        pass
+    return settings.dashboard_password_hash, 0
+
+
+def must_change_password() -> bool:
+    return not settings.demo and password_state()[1] == 0
+
+
+def save_password(password_hash: str, version: int) -> None:
+    target = password_file()
+    target.parent.mkdir(parents=True, exist_ok=True)
+    temporary = target.with_suffix(".tmp")
+    temporary.write_text(json.dumps({"hash": password_hash, "version": version}), "utf-8")
+    try:
+        os.chmod(temporary, 0o600)
+    except OSError:
+        pass
+    os.replace(temporary, target)  # atomic: a crash never leaves half a file
+
+
 def check_password(password: str) -> bool:
-    if settings.dashboard_password_hash:
-        return hasher.verify(password, settings.dashboard_password_hash)
+    password_hash, _ = password_state()
+    if password_hash:
+        return hasher.verify(password, password_hash)
     return settings.demo and password == "demo"  # demo mode only
 
 
@@ -71,14 +112,23 @@ def login_succeeded(key: str) -> None:
 
 def make_token() -> str:
     expires = datetime.now(timezone.utc) + timedelta(hours=settings.session_hours)
-    return jwt.encode({"exp": expires, "sub": "owner"}, SESSION_SECRET, algorithm="HS256")
+    return jwt.encode({"exp": expires, "sub": "owner", "pv": password_state()[1]}, SESSION_SECRET, algorithm="HS256")
 
 
-def require_login(token: str | None = Cookie(default=None, alias=COOKIE)) -> None:
+def set_session_cookie(response: Response) -> None:
+    response.set_cookie(COOKIE, make_token(), httponly=True, samesite="strict", secure=settings.cookie_secure, max_age=settings.session_hours * 3600)
+
+
+def require_login(request: Request, token: str | None = Cookie(default=None, alias=COOKIE)) -> None:
     try:
-        jwt.decode(token or "", SESSION_SECRET, algorithms=["HS256"])
+        payload = jwt.decode(token or "", SESSION_SECRET, algorithms=["HS256"])
     except jwt.PyJWTError:
         raise HTTPException(401, "Bitte melde dich an.")
+    # A password change ends every older session (their token carries the old version).
+    if payload.get("pv", 0) != password_state()[1]:
+        raise HTTPException(401, "Bitte melde dich neu an.")
+    if must_change_password() and request.url.path not in ALLOWED_WHILE_PASSWORD_CHANGE_REQUIRED:
+        raise HTTPException(403, "Bitte ändere zuerst dein Einmalpasswort.", headers={"X-Must-Change-Password": "1"})
 
 
 @app.middleware("http")
@@ -103,6 +153,11 @@ async def same_origin_writes(request: Request, call_next):
 
 class LoginBody(BaseModel):
     password: str = Field(min_length=1, max_length=200)
+
+
+class ChangePasswordBody(BaseModel):
+    current_password: str = Field(min_length=1, max_length=200)
+    new_password: str = Field(min_length=12, max_length=200)
 
 
 class ChatBody(BaseModel):
@@ -136,7 +191,32 @@ def login(body: LoginBody, request: Request, response: Response):
         login_failed(key)
         raise HTTPException(401, "Passwort ist falsch.")
     login_succeeded(key)
-    response.set_cookie(COOKIE, make_token(), httponly=True, samesite="strict", secure=settings.cookie_secure, max_age=settings.session_hours * 3600)
+    set_session_cookie(response)
+    return {"ok": True, "must_change_password": must_change_password()}
+
+
+@app.get("/api/session", dependencies=[Depends(require_login)])
+def session_info():
+    return {"ok": True, "must_change_password": must_change_password()}
+
+
+@app.post("/api/change-password", dependencies=[Depends(require_login)])
+def change_password(body: ChangePasswordBody, request: Request, response: Response):
+    password_hash, version = password_state()
+    if not password_hash:
+        raise HTTPException(403, "Im Demo-Modus kann das Passwort nicht geändert werden.")
+    key = f"password:{request.client.host if request.client else '?'}"
+    if login_blocked(key):
+        raise HTTPException(429, "Zu viele Versuche. Bitte warte ein paar Minuten.")
+    # 400, not 401: the browser must not mistake a typo for an expired session.
+    if not hasher.verify(body.current_password, password_hash):
+        login_failed(key)
+        raise HTTPException(400, "Das aktuelle Passwort ist falsch.")
+    if hasher.verify(body.new_password, password_hash):
+        raise HTTPException(400, "Das neue Passwort muss sich vom alten unterscheiden.")
+    login_succeeded(key)
+    save_password(hasher.hash(body.new_password), version + 1)
+    set_session_cookie(response)  # new token with the new version; every other session ends
     return {"ok": True}
 
 
